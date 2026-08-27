@@ -540,7 +540,11 @@ class PSBTFinalizeView(View):
         else:
             # Sign PSBT
             sig_cnt = PSBTParser.sig_count(psbt)
-            psbt.sign_with(psbt_parser.root)
+            # Name the hash type the PSBT asks for rather than relying on the
+            # signer's default. The unified opt-in selects a signature hash
+            # algorithm, so which one gets used is worth stating here rather
+            # than inheriting from whichever embit happens to be installed.
+            psbt.sign_with(psbt_parser.root, sighash=PSBTParser.sighash_type(psbt))
             trimmed_psbt = PSBTParser.trim(psbt)
 
             if sig_cnt == PSBTParser.sig_count(trimmed_psbt):

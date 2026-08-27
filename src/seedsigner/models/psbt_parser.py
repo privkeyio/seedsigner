@@ -243,6 +243,19 @@ class PSBTParser():
 
 
     @staticmethod
+    def sighash_type(tx):
+        """The hash type every input of this PSBT asks for, or None if the PSBT
+        does not say and embit should use its default.
+
+        Returns None when inputs disagree, so signing falls back to the default
+        rather than applying one input's choice to another's.
+        """
+        declared = {inp.sighash_type for inp in tx.inputs}
+        if len(declared) != 1:
+            return None
+        return declared.pop()
+
+    @staticmethod
     def sig_count(tx):
         cnt = 0
         for i, inp in enumerate(tx.inputs):
