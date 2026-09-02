@@ -5,6 +5,7 @@ from embit.descriptor import Descriptor
 from embit.networks import NETWORKS
 from embit.psbt import PSBT, DerivationPath, InputScope, OutputScope
 from embit.ec import PublicKey
+from embit.transaction import SIGHASH
 from io import BytesIO
 from typing import List
 
@@ -244,16 +245,22 @@ class PSBTParser():
 
     @staticmethod
     def sighash_type(tx):
-        """The hash type every input of this PSBT asks for, or None if the PSBT
-        does not say and embit should use its default.
+        """The hash type every input of this PSBT asks for, for passing to sign_with.
 
-        Returns None when inputs disagree, so signing falls back to the default
-        rather than applying one input's choice to another's.
+        Returns SIGHASH.DEFAULT where the inputs do not all ask for the same thing,
+        which is what sign_with was called with before any of this and leaves that
+        case as it was: embit signs the inputs asking for ALL and skips the rest.
+
+        Passing None instead tells embit to sign every input with whatever that input
+        declares. A PSBT mixing types would then have its SIGHASH_NONE input signed,
+        and that signature commits to no outputs, so anyone could redirect what it
+        spends. Nothing here shows the hash type to the user, so such a transaction
+        reviews as an ordinary one.
         """
         declared = {inp.sighash_type for inp in tx.inputs}
         if len(declared) != 1:
-            return None
-        return declared.pop()
+            return SIGHASH.DEFAULT
+        return declared.pop() if declared != {None} else SIGHASH.DEFAULT
 
     @staticmethod
     def sig_count(tx):
