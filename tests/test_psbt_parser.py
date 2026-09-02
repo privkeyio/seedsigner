@@ -543,6 +543,56 @@ class TestSighashType:
         assert PSBTParser.sighash_type(self._psbt([self.SIGHASH.ALL, self.SIGHASH.NONE])) == self.SIGHASH.DEFAULT
         assert PSBTParser.sighash_type(self._psbt([self.UNIFIED_ALL, self.SIGHASH.NONE])) == self.SIGHASH.DEFAULT
 
+    def test_differing_signable_types_still_fall_back(self):
+        """Two types that are each signable are still a disagreement. Without the length
+        check this returned whichever the set happened to pop, and only an accidental
+        KeyError on an empty PSBT caught that.
+        """
+        assert PSBTParser.sighash_type(self._psbt([self.SIGHASH.ALL, self.UNIFIED_ALL])) == self.SIGHASH.DEFAULT
+        assert PSBTParser.sighash_type(self._psbt([None, self.SIGHASH.ALL])) == self.SIGHASH.DEFAULT
+
+    def test_dangerous_types_produce_no_signature(self):
+        """The property that actually matters, asserted through sign_with rather than on the
+        value handed to it. What makes a SIGHASH_NONE PSBT unsignable is this helper and
+        embit's own per input check together, and embit is pinned by git SHA to a fork. If
+        that pin moves and the fork widens its check, every assertion above still passes
+        while the device signs SIGHASH_NONE again. This one does not.
+        """
+        from embit.bip32 import HDKey
+        from embit.psbt import DerivationPath
+
+        root = HDKey.from_string(
+            "tprv8ZgxMBicQKsPd9TeAdPADNnSyH9SSUUbTVeFszDE23Ki6TBB5nCefAdHkK8Fm3qMQR6sHwA56zqRmKmxnHk37JkiFzvncDqoKmPWubu7hDF")
+        pub = root.derive("m/84h/1h/0h/0/0").to_public()
+
+        for declared in ([self.SIGHASH.NONE] * 2, [self.SIGHASH.SINGLE] * 2, [0x81, 0x81],
+                         [0x82, 0x82], [self.SIGHASH.UNIFIED | self.SIGHASH.NONE] * 2,
+                         [0x05, 0x05], [0x1234, 0x1234]):
+            psbt = self._psbt(declared)
+            for inp in psbt.inputs:
+                inp.bip32_derivations[pub.key] = DerivationPath(
+                    root.my_fingerprint, [84 + 2**31, 1 + 2**31, 2**31, 0, 0])
+            assert psbt.sign_with(root, sighash=PSBTParser.sighash_type(psbt)) == 0, \
+                f"{[hex(d) for d in declared]} must not produce a signature"
+
+    def test_the_opt_in_still_signs(self):
+        """The counterpart: the flow this fork exists for must still work end to end."""
+        from embit.bip32 import HDKey
+        from embit.psbt import DerivationPath
+
+        root = HDKey.from_string(
+            "tprv8ZgxMBicQKsPd9TeAdPADNnSyH9SSUUbTVeFszDE23Ki6TBB5nCefAdHkK8Fm3qMQR6sHwA56zqRmKmxnHk37JkiFzvncDqoKmPWubu7hDF")
+        pub = root.derive("m/84h/1h/0h/0/0").to_public()
+
+        psbt = self._psbt([self.UNIFIED_ALL, self.UNIFIED_ALL])
+        for inp in psbt.inputs:
+            inp.bip32_derivations[pub.key] = DerivationPath(
+                root.my_fingerprint, [84 + 2**31, 1 + 2**31, 2**31, 0, 0])
+        assert psbt.sign_with(root, sighash=PSBTParser.sighash_type(psbt)) == 2
+        for inp in psbt.inputs:
+            for sig in inp.partial_sigs.values():
+                assert bytes(sig)[-1] == self.UNIFIED_ALL
+
     def test_never_returns_none(self):
         """sign_with(sighash=None) signs every input with whatever it declares, which is
         how the SIGHASH_NONE input got signed in the first place."""

@@ -243,8 +243,9 @@ class PSBTParser():
         return trimmed_psbt
 
 
-    # The hash types this device will sign. Everything else falls back to SIGHASH.DEFAULT,
-    # which is what sign_with was called with before any hash type was passed at all.
+    # The hash types this device will ask sign_with for. Everything else falls back to
+    # SIGHASH.DEFAULT, which is what sign_with was called with before any hash type was
+    # passed at all, and under which it signs the inputs asking for ALL and skips the rest.
     #
     # An allowlist rather than a blocklist, because the value comes off the wire from a host
     # this device does not trust, and it decides what the signature commits to. SIGHASH_NONE
@@ -253,12 +254,17 @@ class PSBTParser():
     # signs a constant that is reusable against any transaction spending that key.
     # ANYONECANPAY leaves the other inputs uncommitted. None of these are shown to the user,
     # so a transaction asking for one reviews as an ordinary send.
-    SIGNABLE_SIGHASH_TYPES = {
+    #
+    # This bounds what is asked for, not what can come back. Under DEFAULT, sign_with still
+    # honours an input's own opt-in bit, so a signature carrying 0x20 or 0x21 can be produced
+    # from a PSBT declaring it. Both commit to every output and every input, which is the
+    # property being protected here.
+    SIGNABLE_SIGHASH_TYPES = frozenset({
         None,                               # the PSBT does not say
         SIGHASH.DEFAULT,                    # taproot, commits to everything
         SIGHASH.ALL,
         SIGHASH.UNIFIED | SIGHASH.ALL,      # the unified opt-in
-    }
+    })
 
     @staticmethod
     def sighash_type(tx):
