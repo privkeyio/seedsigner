@@ -243,24 +243,35 @@ class PSBTParser():
         return trimmed_psbt
 
 
+    # The hash types this device will sign. Everything else falls back to SIGHASH.DEFAULT,
+    # which is what sign_with was called with before any hash type was passed at all.
+    #
+    # An allowlist rather than a blocklist, because the value comes off the wire from a host
+    # this device does not trust, and it decides what the signature commits to. SIGHASH_NONE
+    # commits to no outputs, so its signature lets anyone redirect what the input spends.
+    # SIGHASH_SINGLE with no output at the input's index does the same, and on a legacy input
+    # signs a constant that is reusable against any transaction spending that key.
+    # ANYONECANPAY leaves the other inputs uncommitted. None of these are shown to the user,
+    # so a transaction asking for one reviews as an ordinary send.
+    SIGNABLE_SIGHASH_TYPES = {
+        None,                               # the PSBT does not say
+        SIGHASH.DEFAULT,                    # taproot, commits to everything
+        SIGHASH.ALL,
+        SIGHASH.UNIFIED | SIGHASH.ALL,      # the unified opt-in
+    }
+
     @staticmethod
     def sighash_type(tx):
-        """The hash type every input of this PSBT asks for, for passing to sign_with.
+        """The hash type to pass to sign_with for this PSBT.
 
-        Returns SIGHASH.DEFAULT where the inputs do not all ask for the same thing,
-        which is what sign_with was called with before any of this and leaves that
-        case as it was: embit signs the inputs asking for ALL and skips the rest.
-
-        Passing None instead tells embit to sign every input with whatever that input
-        declares. A PSBT mixing types would then have its SIGHASH_NONE input signed,
-        and that signature commits to no outputs, so anyone could redirect what it
-        spends. Nothing here shows the hash type to the user, so such a transaction
-        reviews as an ordinary one.
+        The inputs' own type where they all ask for the same signable one, and
+        SIGHASH.DEFAULT otherwise. Under DEFAULT embit signs the inputs asking for ALL and
+        skips the rest, which is what this did before a hash type was passed at all.
         """
         declared = {inp.sighash_type for inp in tx.inputs}
-        if len(declared) != 1:
+        if len(declared) != 1 or not declared <= PSBTParser.SIGNABLE_SIGHASH_TYPES:
             return SIGHASH.DEFAULT
-        return declared.pop() if declared != {None} else SIGHASH.DEFAULT
+        return declared.pop() or SIGHASH.DEFAULT
 
     @staticmethod
     def sig_count(tx):

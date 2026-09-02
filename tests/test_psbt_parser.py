@@ -485,3 +485,66 @@ def test_parse_op_return_content():
     assert psbt_parser.change_amount == 99992296
     assert psbt_parser.destination_addresses == []
     assert psbt_parser.destination_amounts == []
+
+
+class TestSighashType:
+    """PSBTParser.sighash_type decides what sign_with is asked for, from a value the
+    host supplies. Nothing on this device shows the hash type to the user, so a
+    transaction asking for one that does not commit to the outputs reviews as an
+    ordinary send. These pin which types this device will sign at all.
+    """
+    from embit.transaction import SIGHASH
+
+    UNIFIED_ALL = SIGHASH.UNIFIED | SIGHASH.ALL
+
+    @staticmethod
+    def _psbt(sighash_types):
+        from embit.psbt import PSBT
+        from embit.transaction import Transaction, TransactionInput, TransactionOutput
+        from embit import script
+        from embit.bip32 import HDKey
+
+        spk = script.p2wpkh(HDKey.from_string(
+            "tprv8ZgxMBicQKsPd9TeAdPADNnSyH9SSUUbTVeFszDE23Ki6TBB5nCefAdHkK8Fm3qMQR6sHwA56zqRmKmxnHk37JkiFzvncDqoKmPWubu7hDF"
+        ).derive("m/84h/1h/0h/0/0").to_public())
+        vin = [TransactionInput(bytes(32)[:31] + bytes([i + 1]), 0) for i in range(len(sighash_types))]
+        psbt = PSBT(Transaction(vin=vin, vout=[TransactionOutput(90000, spk)]))
+        for i, sh in enumerate(sighash_types):
+            psbt.inputs[i].witness_utxo = TransactionOutput(100000, spk)
+            psbt.inputs[i].sighash_type = sh
+        return psbt
+
+    @pytest.mark.parametrize("declared", [
+        [None, None],
+        [SIGHASH.ALL, SIGHASH.ALL],
+        [SIGHASH.DEFAULT, SIGHASH.DEFAULT],
+        [UNIFIED_ALL, UNIFIED_ALL],
+    ])
+    def test_signable_types_are_passed_through(self, declared):
+        """A type this device signs is handed to sign_with as the PSBT asked."""
+        expected = declared[0] or self.SIGHASH.DEFAULT
+        assert PSBTParser.sighash_type(self._psbt(declared)) == expected
+
+    @pytest.mark.parametrize("declared, why", [
+        ([SIGHASH.NONE, SIGHASH.NONE], "commits to no outputs, so anyone can redirect the spend"),
+        ([SIGHASH.SINGLE, SIGHASH.SINGLE], "an input with no output at its index commits to nothing"),
+        ([0x81, 0x81], "ANYONECANPAY leaves the other inputs uncommitted"),
+        ([0x82, 0x82], "ANYONECANPAY | NONE"),
+        ([SIGHASH.UNIFIED | SIGHASH.NONE] * 2, "the opt-in does not make NONE safe"),
+        ([0x05, 0x05], "not a defined type"),
+    ])
+    def test_dangerous_types_fall_back_to_default(self, declared, why):
+        """Falling back to DEFAULT makes sign_with skip these inputs, which is what
+        happened before any hash type was passed at all."""
+        assert PSBTParser.sighash_type(self._psbt(declared)) == self.SIGHASH.DEFAULT, why
+
+    def test_disagreeing_inputs_fall_back_to_default(self):
+        """One input asking for NONE must not get its own signature just because it asked."""
+        assert PSBTParser.sighash_type(self._psbt([self.SIGHASH.ALL, self.SIGHASH.NONE])) == self.SIGHASH.DEFAULT
+        assert PSBTParser.sighash_type(self._psbt([self.UNIFIED_ALL, self.SIGHASH.NONE])) == self.SIGHASH.DEFAULT
+
+    def test_never_returns_none(self):
+        """sign_with(sighash=None) signs every input with whatever it declares, which is
+        how the SIGHASH_NONE input got signed in the first place."""
+        for declared in ([None, None], [self.SIGHASH.NONE] * 2, [self.SIGHASH.ALL, self.SIGHASH.NONE], []):
+            assert PSBTParser.sighash_type(self._psbt(declared)) is not None
