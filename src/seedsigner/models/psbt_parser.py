@@ -277,16 +277,39 @@ class PSBTParser():
     })
 
     @staticmethod
+    def _derivation_matches_seed(public_key, derivation_path_obj, seed, network):
+        """Whether one derivation on an input or output belongs to the given seed.
+
+        A coordinator given only an xpub omits the fingerprint, which arrives as four
+        zero bytes, so an exact comparison alone would answer False for inputs that are
+        this seed's. The fallback derives the key the PSBT names and compares it, which
+        is what PSBTParser does elsewhere before parsing.
+        """
+        if hexlify(derivation_path_obj.fingerprint).decode() == seed.get_fingerprint(network):
+            return True
+
+        if derivation_path_obj.fingerprint == b"\x00\x00\x00\x00":
+            root = bip32.HDKey.from_seed(
+                seed.seed_bytes,
+                version=NETWORKS[SettingsConstants.map_network_to_embit(network)]["xprv"],
+            )
+            try:
+                return root.derive(derivation_path_obj.derivation).key.sec() == public_key.sec()
+            except Exception as e:
+                logger.debug("Fingerprint fallback derive failed: %s", e, exc_info=True)
+        return False
+
+
+    @staticmethod
     def _input_is_ours(inp, seed, network):
         """Whether any derivation on this input belongs to the given seed."""
-        fingerprint = seed.get_fingerprint(network)
         derivations = list(inp.bip32_derivations.items()) + [
             (pub, derivation) for pub, (_leaves, derivation) in inp.taproot_bip32_derivations.items()
         ]
-        for _pub, derivation in derivations:
-            if hexlify(derivation.fingerprint).decode() == fingerprint:
-                return True
-        return False
+        return any(
+            PSBTParser._derivation_matches_seed(pub, derivation, seed, network)
+            for pub, derivation in derivations
+        )
 
 
     @staticmethod
@@ -498,25 +521,9 @@ class PSBTParser():
             Extracts the fingerprint from each psbt input utxo. Returns True if any match
             the current seed.
         """
-        seed_fingerprint = seed.get_fingerprint(network)
-        
         def check_fingerprint_match(public_key: PublicKey, derivation_path_obj: DerivationPath):
-            """Check fingerprint match with missing fingerprint fallback"""
+            return PSBTParser._derivation_matches_seed(public_key, derivation_path_obj, seed, network)
 
-            # If exact fingerprint match
-            if hexlify(derivation_path_obj.fingerprint).decode() == seed_fingerprint:
-                return True
-            
-            # Missing fingerprint fallback
-            if derivation_path_obj.fingerprint == b"\x00\x00\x00\x00":
-                root = bip32.HDKey.from_seed(seed.seed_bytes, version=NETWORKS[SettingsConstants.map_network_to_embit(network)]["xprv"])
-                try:
-                    derived_key = root.derive(derivation_path_obj.derivation)
-                    return derived_key.key.sec() == public_key.sec() # Public keys match
-                except Exception as e:
-                    logger.debug("Fingerprint fallback derive failed: %s", e, exc_info=True)
-            return False
-        
         # Check all derivations in all inputs
         for input in psbt.inputs:
             # Check regular BIP32 derivations

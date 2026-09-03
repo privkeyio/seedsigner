@@ -320,6 +320,19 @@ class TestTheScreenNamesWhatIsSigned(FlowTest):
 
         assert psbt.sign_with(_root(), sighash=PSBTParser.sighash_type(psbt)) == 1
 
+    def test_a_coordinator_that_omitted_fingerprints_is_still_recognised(self):
+        """A coordinator given only an xpub writes four zero bytes where the fingerprint
+        goes. Comparing fingerprints alone answers False for inputs that are this seed's,
+        which would skip the refusal and put us back to signing part of a transaction and
+        calling it whole."""
+        psbt = self._psbt([SIGHASH.UNIFIED | SIGHASH.ALL, SIGHASH.NONE])
+        for inp in psbt.inputs:
+            for pub, derivation in inp.bip32_derivations.items():
+                derivation.fingerprint = b"\x00\x00\x00\x00"
+
+        assert PSBTParser._input_is_ours(psbt.inputs[1], _seed(), self.NETWORK)
+        assert PSBTParser.unsignable_inputs(psbt, seed=_seed(), network=self.NETWORK) == [1]
+
     def test_our_own_input_declaring_it_is_still_refused(self):
         psbt = self._psbt([SIGHASH.UNIFIED | SIGHASH.ALL, SIGHASH.NONE])
         assert PSBTParser.unsignable_inputs(psbt, seed=_seed(), network=self.NETWORK) == [1]
