@@ -593,6 +593,16 @@ class TestSighashType:
             for sig in inp.partial_sigs.values():
                 assert bytes(sig)[-1] == self.UNIFIED_ALL
 
+    def test_the_fallback_must_be_default_not_all(self):
+        """The fallback cannot be SIGHASH.ALL, which is the obvious-looking change.
+
+        Under DEFAULT, sign_with leaves an input's own opt-in bit alone. Under ALL it
+        strips it, and a PSBT declaring 0x20 then emits a signature whose hash type byte
+        is 0x00, which no verifier accepts. DEFAULT is load bearing, not incidental.
+        """
+        assert PSBTParser.sighash_type(self._psbt([self.SIGHASH.NONE] * 2)) == self.SIGHASH.DEFAULT
+        assert PSBTParser.sighash_type(self._psbt([self.SIGHASH.NONE] * 2)) != self.SIGHASH.ALL
+
     def test_never_returns_none(self):
         """sign_with(sighash=None) signs every input with whatever it declares, which is
         how the SIGHASH_NONE input got signed in the first place."""
