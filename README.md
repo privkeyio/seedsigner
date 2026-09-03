@@ -8,6 +8,9 @@ An unofficial fork of [SeedSigner](https://github.com/SeedSigner/seedsigner) tha
 
 - **Signs the unified message when the transaction asks for it.** A PSBT declaring hash type `0x21` is signed with the fork's message; one declaring nothing is signed the standard way, exactly as before.
 - **The signature hash type is on the approval screen.** `Unified sighash (0x21)` or `Standard sighash (0x01)`, so a host that quietly rewrites the request cannot do it without you seeing. What it names is checked against every signature the device makes before anything leaves it.
+
+  <img src="docs/img/sighash-unified.png" width="200" alt="The approval screen reading Unified sighash (0x21)"> <img src="docs/img/sighash-standard.png" width="200" alt="The approval screen reading Standard sighash (0x01)">
+
 - **A transaction it can only sign part of is refused**, rather than signed in part and reported as complete.
 - **[embit](https://github.com/privkeyio/embit) is pinned to a fork** carrying the algorithm, by commit and by tarball hash, because the stock library signs the standard way and reports nothing unusual while doing it.
 
