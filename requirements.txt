@@ -1,4 +1,4 @@
-embit @ git+https://github.com/privkeyio/embit.git@61bf2b06e71da5ec21712a3f25805f30d49d8566
+embit @ git+https://github.com/privkeyio/embit.git@3271b338c5947b2b5ad9c9b8d9991494306bc924
 Pillow==10.3.0
 pyzbar @ git+https://github.com/seedsigner/pyzbar.git@c3c237821c6a20b17953efe59b90df0b514a1c03
 qrcode==7.3.1

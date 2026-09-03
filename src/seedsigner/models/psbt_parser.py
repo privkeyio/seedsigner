@@ -256,9 +256,10 @@ class PSBTParser():
     # so a transaction asking for one reviews as an ordinary send.
     #
     # This bounds what is asked for, not what can come back. Under DEFAULT, sign_with still
-    # honours an input's own opt-in bit, so a signature carrying 0x20 or 0x21 can be produced
-    # from a PSBT declaring it. Both commit to every output and every input, which is the
-    # property being protected here.
+    # honours an input's own opt-in bit, so a PSBT declaring 0x21 is signed as 0x21 without
+    # this device naming it. That commits to every output and every input, which is the
+    # property being protected here. A bare 0x20 is not signed under DEFAULT by either
+    # side: it is not on this list, and embit refuses it against the type asked for.
     SIGNABLE_SIGHASH_TYPES = frozenset({
         None,                               # the PSBT does not say
         SIGHASH.DEFAULT,                    # taproot, commits to everything
