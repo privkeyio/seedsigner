@@ -1,3 +1,5 @@
+import pytest
+
 from base import FlowTest, FlowStep
 
 from seedsigner.controller import Controller
@@ -55,3 +57,123 @@ class TestUnifiedSighashFlow(FlowTest):
             assert s[-1] == (SIGHASH.ALL | SIGHASH.UNIFIED), \
                 f"hash type byte is {hex(s[-1])}, expected 0x21"
         print(f"\n  flow signed {len(sigs)} input(s), every hash type byte 0x21")
+
+
+class TestMixedSighashFlow(FlowTest):
+    """A PSBT whose inputs declare hash types this device cannot ask for at once.
+
+    The device names one hash type for the whole call, so the inputs that disagree
+    are skipped. The signature count still goes up, so without a check this reviews
+    and reports exactly like a fully signed transaction while producing one that
+    cannot be broadcast.
+    """
+
+    MIXED_PSBT = "cHNidP8BANgCAAAAAsTXZs3fz/dmGb6M80+jjvJZdYya+cw5bT/dGuhZFdSlAAAAAAD9////qo6xg/UZAvUkcbse1F+C9zbP/FeZNjThx7SCIn6eMCgBAAAAAP3///8EQOIBAAAAAAAWABSkZPM7kLcTRE2En1t33/0RCHgMjQXYnnYAAAAAFgAUKMaPRKXdY4m8iKrE9j+rycskJU1A4gEAAAAAABYAFPYc9wiHRrYKAZYLLztREAwpPBIwipVcAwAAAAAWABSiFuiJIa4NrxLUBVQNS0NIun6DDtoRAABPAQQ1h88DBcQGZIAAAAA+0J+jlNL3dpWwlnBi8Dx+Ipg4e6uvB3HdjzFPX7r9CAOOlAIxgII+/xCcj+XoEenKH7wj5s5wlu7Q7CCZWFLGLhA5Su0UVAAAgAEAAIAAAACAAAEA7QIAAAAEE6njX/fnvn7hbkKIRcxzNYFOSfbCdNeWnd7Fe/1UcQ0BAAAAAP3///8TqeNf9+e+fuFuQohFzHM1gU5J9sJ015ad3sV7/VRxDQMAAAAA/f///xOp41/3575+4W5CiEXMczWBTkn2wnTXlp3exXv9VHENBAAAAAD9////E6njX/fnvn7hbkKIRcxzNYFOSfbCdNeWnd7Fe/1UcQ0GAAAAAP3///8CUnheAwAAAAAWABRCfygPJ+Fjsx4BknYvvm3A3qKn2xJ/XQcAAAAAF6kU1I4TAst5nAj15ey7vwe5cM3OFq+HlhEAAAEBH1J4XgMAAAAAFgAUQn8oDyfhY7MeAZJ2L75twN6ip9sBAwQhAAAAIgYCo7sfm78RQY3B5n0ac/QF8VtMAzFnci+h5D1MtpgRY7oYOUrtFFQAAIABAACAAAAAgAEAAAAGAAAAAAEAcQIAAAABxY7wh0nsfJQfzWrD/9rN9BYsM+iOmPaO6I0ANFgO/PcAAAAAAP3///8CptiUAAAAAAAWABRIm4HhQY/TzOjeWSPRrbuJo9MlW826oHYAAAAAFgAU0z+0L2QSLGtyQTn8FhbCpcI7jbliAQAAAQEfzbqgdgAAAAAWABTTP7QvZBIsa3JBOfwWFsKlwjuNuQEDBAIAAAAiBgITHmebEANk81CraV4xZIpqkNjjw0tIvezl1Ism1NRH3Rg5Su0UVAAAgAEAAIAAAACAAQAAAAAAAAAAIgICuTT7WnuiUTpObjWnZFHzIeEvW9PTB+1LLVFNQJVFeIIYOUrtFFQAAIABAACAAAAAgAEAAAAHAAAAACICAk8f3hpc5C35chgSg+Pe2zZ9IhHREd4aKW2+yAMRIFeqGDlK7RRUAACAAQAAgAAAAIABAAAACQAAAAAAIgIDjt1CjvrnMMnjbmTNKUAYoKEDRbmKjNjbq+6Ppqj3bqQYOUrtFFQAAIABAACAAAAAgAEAAAAIAAAAAA=="
+
+    def test_a_transaction_it_cannot_fully_sign_is_refused(self):
+        def load_psbt_into_decoder(view: scan_views.ScanView):
+            view.decoder.add_data(self.MIXED_PSBT)
+
+        def load_seed_into_decoder(view: scan_views.ScanView):
+            view.decoder.add_data("080115060387063104071857067618681125136207731354")
+
+        self.run_sequence([
+            FlowStep(MainMenuView, button_data_selection=MainMenuView.SCAN),
+            FlowStep(scan_views.ScanView, before_run=load_psbt_into_decoder),
+            FlowStep(psbt_views.PSBTSelectSeedView, button_data_selection=psbt_views.PSBTSelectSeedView.SCAN_SEED),
+            FlowStep(scan_views.ScanSeedQRView, before_run=load_seed_into_decoder),
+            FlowStep(seed_views.SeedFinalizeView, button_data_selection=seed_views.SeedFinalizeView.FINALIZE),
+            FlowStep(seed_views.SeedOptionsView, is_redirect=True),
+            FlowStep(psbt_views.PSBTOverviewView),
+            FlowStep(psbt_views.PSBTMathView),
+            FlowStep(psbt_views.PSBTAddressDetailsView, button_data_selection=0),
+            FlowStep(psbt_views.PSBTChangeDetailsView, button_data_selection=psbt_views.PSBTChangeDetailsView.NEXT),
+            FlowStep(psbt_views.PSBTChangeDetailsView, button_data_selection=psbt_views.PSBTChangeDetailsView.NEXT),
+            FlowStep(psbt_views.PSBTChangeDetailsView, button_data_selection=psbt_views.PSBTChangeDetailsView.NEXT),
+            # never reaches the approval screen: it is refused before the user is asked
+            FlowStep(psbt_views.PSBTFinalizeView, is_redirect=True),
+            FlowStep(psbt_views.PSBTUnsignableSighashView, button_data_selection=0),
+            FlowStep(MainMenuView),
+        ])
+
+    def test_signing_it_would_sign_only_part_of_it(self):
+        """The hazard the refusal exists for. The count going up is what made a
+        partly signed transaction report success, so demonstrate it rather than
+        asserting only on the screen the flow reached."""
+        from base64 import b64decode
+
+        from embit.bip32 import HDKey
+        from embit.psbt import PSBT
+        from embit.wordlists.bip39 import WORDLIST
+
+        from seedsigner.models.seed import Seed
+
+        psbt = PSBT.parse(b64decode(self.MIXED_PSBT))
+        assert [inp.sighash_type for inp in psbt.inputs] == [
+            SIGHASH.UNIFIED | SIGHASH.ALL, SIGHASH.NONE
+        ]
+        assert PSBTParser.unsignable_inputs(psbt) == [1]
+
+        digits = "080115060387063104071857067618681125136207731354"
+        seed = Seed(mnemonic=[WORDLIST[int(digits[i:i + 4])] for i in range(0, len(digits), 4)])
+        before = PSBTParser.sig_count(psbt)
+        psbt.sign_with(HDKey.from_seed(seed.seed_bytes), sighash=PSBTParser.sighash_type(psbt))
+        after = PSBTParser.sig_count(psbt)
+
+        assert before == 0
+        assert after == 1, "expected exactly one of the two inputs to be signed"
+        assert after != before, "the count rises, which is what used to report success"
+        assert after < len(psbt.inputs), "yet the transaction is not fully signed"
+
+
+class TestSigningRaisesAfterApproval(FlowTest):
+    """A PSBT that parses and reviews but raises partway through signing.
+
+    Signing mutates the inputs in place as it goes, so the object the controller
+    holds would keep the signatures made before the failure. Nothing broadcasts it,
+    because the controller only takes the trimmed PSBT on success, but whatever runs
+    next sees a PSBT that is neither the one scanned nor a signed one.
+    """
+
+    RAISING_PSBT = "cHNidP8BANgCAAAAAsTXZs3fz/dmGb6M80+jjvJZdYya+cw5bT/dGuhZFdSlAAAAAAD9////qo6xg/UZAvUkcbse1F+C9zbP/FeZNjThx7SCIn6eMCgBAAAAAP3///8EQOIBAAAAAAAWABSkZPM7kLcTRE2En1t33/0RCHgMjQXYnnYAAAAAFgAUKMaPRKXdY4m8iKrE9j+rycskJU1A4gEAAAAAABYAFPYc9wiHRrYKAZYLLztREAwpPBIwipVcAwAAAAAWABSiFuiJIa4NrxLUBVQNS0NIun6DDtoRAABPAQQ1h88DBcQGZIAAAAA+0J+jlNL3dpWwlnBi8Dx+Ipg4e6uvB3HdjzFPX7r9CAOOlAIxgII+/xCcj+XoEenKH7wj5s5wlu7Q7CCZWFLGLhA5Su0UVAAAgAEAAIAAAACAAAEA7QIAAAAEE6njX/fnvn7hbkKIRcxzNYFOSfbCdNeWnd7Fe/1UcQ0BAAAAAP3///8TqeNf9+e+fuFuQohFzHM1gU5J9sJ015ad3sV7/VRxDQMAAAAA/f///xOp41/3575+4W5CiEXMczWBTkn2wnTXlp3exXv9VHENBAAAAAD9////E6njX/fnvn7hbkKIRcxzNYFOSfbCdNeWnd7Fe/1UcQ0GAAAAAP3///8CUnheAwAAAAAWABRCfygPJ+Fjsx4BknYvvm3A3qKn2xJ/XQcAAAAAF6kU1I4TAst5nAj15ey7vwe5cM3OFq+HlhEAAAEBH1J4XgMAAAAAFgAUQn8oDyfhY7MeAZJ2L75twN6ip9siBgKjux+bvxFBjcHmfRpz9AXxW0wDMWdyL6HkPUy2mBFjuhg5Su0UVAAAgAEAAIAAAACAAQAAAAYAAAAAIgYCEx5nmxADZPNQq2leMWSKapDY48NLSL3s5dSLJtTUR90YOUrtFFQAAIABAACAAAAAgAEAAAAAAAAAACICArk0+1p7olE6Tm41p2RR8yHhL1vT0wftSy1RTUCVRXiCGDlK7RRUAACAAQAAgAAAAIABAAAABwAAAAAiAgJPH94aXOQt+XIYEoPj3ts2fSIR0RHeGiltvsgDESBXqhg5Su0UVAAAgAEAAIAAAACAAQAAAAkAAAAAACICA47dQo765zDJ425kzSlAGKChA0W5iozY26vuj6ao926kGDlK7RRUAACAAQAAgAAAAIABAAAACAAAAAA="
+
+    @staticmethod
+    def _root():
+        from embit.bip32 import HDKey
+        from embit.wordlists.bip39 import WORDLIST
+
+        from seedsigner.models.seed import Seed
+
+        digits = "080115060387063104071857067618681125136207731354"
+        seed = Seed(mnemonic=[WORDLIST[int(digits[i:i + 4])] for i in range(0, len(digits), 4)])
+        return HDKey.from_seed(seed.seed_bytes)
+
+    def test_signing_in_place_leaves_a_half_signed_psbt(self):
+        """The hazard itself, so the fix below is measured against something real."""
+        from base64 import b64decode
+
+        from embit.psbt import PSBT
+
+        raw = b64decode(self.RAISING_PSBT)
+        held = PSBT.parse(raw)
+        with pytest.raises(Exception):
+            held.sign_with(self._root(), sighash=PSBTParser.sighash_type(held))
+
+        assert PSBTParser.sig_count(held) == 1, "expected one input signed before the failure"
+        assert held.serialize() != raw, "expected the object to have been mutated"
+
+    def test_signing_a_copy_leaves_the_scanned_psbt_alone(self):
+        from base64 import b64decode
+
+        from embit.psbt import PSBT
+
+        raw = b64decode(self.RAISING_PSBT)
+        held = PSBT.parse(raw)
+
+        # what the view does now
+        signing_psbt = PSBT.parse(held.serialize())
+        with pytest.raises(Exception):
+            signing_psbt.sign_with(self._root(), sighash=PSBTParser.sighash_type(signing_psbt))
+
+        assert PSBTParser.sig_count(held) == 0
+        assert held.serialize() == raw

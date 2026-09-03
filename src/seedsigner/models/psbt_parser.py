@@ -232,6 +232,13 @@ class PSBTParser():
     def trim(tx):
         trimmed_psbt = psbt.PSBT(tx.tx)
         for i, inp in enumerate(tx.inputs):
+            # The declared hash type travels with the input. A signature carries its own
+            # in its last byte, so a lone signer does not need this, but a co-signer
+            # reading the trimmed PSBT does: without it the next one is not told the
+            # opt-in was asked for and signs the legacy message instead, and the two
+            # signatures then cover different messages.
+            trimmed_psbt.inputs[i].sighash_type = inp.sighash_type
+
             if inp.final_scriptwitness:
                 # Taproot sign; trim to only final_scriptwitness
                 # From BIP-371 and BIP-174, once final script witness is populated
@@ -266,6 +273,28 @@ class PSBTParser():
         SIGHASH.ALL,
         SIGHASH.UNIFIED | SIGHASH.ALL,      # the unified opt-in
     })
+
+    @staticmethod
+    def unsignable_inputs(tx):
+        """Inputs the signer will skip because the hash type they declare is not the
+        one this device is about to ask for.
+
+        An input declaring nothing takes whatever is asked for, and DEFAULT and ALL are
+        the same request, so neither is skipped. The comparison is embit's own, so this
+        cannot drift from what sign_with actually does.
+
+        Signing a transaction with any of these produces a PSBT that is signed in part
+        and cannot be broadcast, which is worse than not signing it.
+        """
+        from embit.psbt import sighash_types_agree
+
+        requested = PSBTParser.sighash_type(tx)
+        return [
+            i for i, inp in enumerate(tx.inputs)
+            if inp.sighash_type is not None
+            and not sighash_types_agree(inp.sighash_type, requested)
+        ]
+
 
     @staticmethod
     def sighash_type(tx):

@@ -1,3 +1,5 @@
+import logging
+
 from gettext import gettext as _
 
 from seedsigner.models.psbt_parser import PSBTParser
@@ -5,6 +7,8 @@ from seedsigner.models.settings import SettingsConstants
 from seedsigner.gui.components import FontAwesomeIconConstants, SeedSignerIconConstants
 from seedsigner.gui.screens.screen import (RET_CODE__BACK_BUTTON, ButtonListScreen, ButtonOption, WarningScreen, DireWarningScreen, QRDisplayScreen)
 from seedsigner.views.view import BackStackView, MainMenuView, NotYetImplementedView, View, Destination
+
+logger = logging.getLogger(__name__)
 
 
 
@@ -528,7 +532,13 @@ class PSBTFinalizeView(View):
         if not psbt_parser:
             # Should not be able to get here
             return Destination(MainMenuView)
-        
+
+        # Checked before the approval screen rather than after it: signing these would
+        # produce a transaction signed in part, which cannot be broadcast, and the user
+        # should not be asked to approve something that will not be signed.
+        if PSBTParser.unsignable_inputs(psbt):
+            return Destination(PSBTUnsignableSighashView)
+
         selected_menu_num = self.run_screen(
             PSBTFinalizeScreen,
             button_data=[self.APPROVE_PSBT]
@@ -540,12 +550,26 @@ class PSBTFinalizeView(View):
         else:
             # Sign PSBT
             sig_cnt = PSBTParser.sig_count(psbt)
-            # Name the hash type the PSBT asks for rather than relying on the
-            # signer's default. The unified opt-in selects a signature hash
-            # algorithm, so which one gets used is worth stating here rather
-            # than inheriting from whichever embit happens to be installed.
-            psbt.sign_with(psbt_parser.root, sighash=PSBTParser.sighash_type(psbt))
-            trimmed_psbt = PSBTParser.trim(psbt)
+
+            # Signed on a copy. The PSBT comes off a QR from a host this device does
+            # not trust, and signing mutates the inputs in place as it goes, so a
+            # malformed one that raises partway through would otherwise leave a
+            # half-signed object on the controller for whatever runs next.
+            signing_psbt = PSBT.parse(psbt.serialize())
+
+            try:
+                # Name the hash type the PSBT asks for rather than relying on the
+                # signer's default. The unified opt-in selects a signature hash
+                # algorithm, so which one gets used is worth stating here rather
+                # than inheriting from whichever embit happens to be installed.
+                signing_psbt.sign_with(psbt_parser.root, sighash=PSBTParser.sighash_type(signing_psbt))
+            except Exception as e:
+                # Any failure here is a property of the PSBT, which is untrusted input,
+                # rather than of the seed. Logged so a genuine defect is still visible.
+                logger.exception("signing raised on a PSBT the user had approved: %s", e)
+                return Destination(PSBTSigningErrorView)
+
+            trimmed_psbt = PSBTParser.trim(signing_psbt)
 
             if sig_cnt == PSBTParser.sig_count(trimmed_psbt):
                 # Signing failed / didn't do anything
@@ -571,6 +595,27 @@ class PSBTSignedQRDisplayView(View):
 
         # We're done with this PSBT. Route back to MainMenuView which always
         #   clears all ephemeral data (except in-memory seeds).
+        return Destination(MainMenuView, clear_history=True)
+
+
+
+class PSBTUnsignableSighashView(View):
+    """Some input declares a signature hash type this device will not ask for.
+
+    Signing anyway would sign the inputs that agree and skip the rest, and the count
+    of signatures would go up, so it would report success and hand back a transaction
+    that cannot be broadcast.
+    """
+    def run(self):
+        self.run_screen(
+            WarningScreen,
+            title=_("Transaction Error"),
+            status_icon_name=SeedSignerIconConstants.WARNING,
+            status_headline=_("Cannot Sign"),
+            text=_("This transaction asks for a signature type this device does not sign. Signing it would only sign part of it."),
+            show_back_button=False,
+            button_data=[ButtonOption("Done")],
+        )
         return Destination(MainMenuView, clear_history=True)
 
 

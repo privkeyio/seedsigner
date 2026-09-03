@@ -5,6 +5,7 @@ from binascii import a2b_base64
 from embit import bip32
 from embit.psbt import PSBT
 from embit.descriptor import Descriptor
+from embit.transaction import SIGHASH
 
 from seedsigner.models.psbt_parser import PSBTParser
 from seedsigner.models.seed import Seed
@@ -485,6 +486,50 @@ def test_parse_op_return_content():
     assert psbt_parser.change_amount == 99992296
     assert psbt_parser.destination_addresses == []
     assert psbt_parser.destination_amounts == []
+
+
+class TestTrimCarriesTheDeclaredType:
+    """A signature carries its own hash type in its last byte, so a lone signer does
+    not need the declared field. A co-signer reading the trimmed PSBT does: without it
+    the next signer is not told the opt-in was asked for."""
+
+    @staticmethod
+    def _psbt(declared):
+        from embit.psbt import PSBT
+        from embit.transaction import Transaction, TransactionInput, TransactionOutput
+        from embit import script
+        from embit.bip32 import HDKey
+
+        spk = script.p2wpkh(HDKey.from_string(
+            "tprv8ZgxMBicQKsPd9TeAdPADNnSyH9SSUUbTVeFszDE23Ki6TBB5nCefAdHkK8Fm3qMQR6sHwA5"
+            "6zqRmKmxnHk37JkiFzvncDqoKmPWubu7hDF"
+        ).derive("m/84h/1h/0h/0/0").to_public())
+        vin = [TransactionInput(bytes(31) + bytes([i + 1]), 0) for i in range(len(declared))]
+        psbt = PSBT(Transaction(vin=vin, vout=[TransactionOutput(90000, spk)]))
+        for i, sh in enumerate(declared):
+            psbt.inputs[i].witness_utxo = TransactionOutput(100000, spk)
+            psbt.inputs[i].sighash_type = sh
+        return psbt
+
+    @pytest.mark.parametrize("declared", [
+        [SIGHASH.UNIFIED | SIGHASH.ALL],
+        [SIGHASH.ALL],
+        [None],
+        [SIGHASH.UNIFIED | SIGHASH.ALL, SIGHASH.UNIFIED | SIGHASH.ALL],
+    ])
+    def test_the_declared_type_survives_trimming(self, declared):
+        trimmed = PSBTParser.trim(self._psbt(declared))
+        assert [inp.sighash_type for inp in trimmed.inputs] == declared
+
+    def test_it_survives_serialization(self):
+        """The trimmed PSBT is what leaves the device, so the field has to be on the
+        wire, not just on the object."""
+        from embit.psbt import PSBT
+
+        declared = SIGHASH.UNIFIED | SIGHASH.ALL
+        trimmed = PSBTParser.trim(self._psbt([declared]))
+        reparsed = PSBT.parse(trimmed.serialize())
+        assert reparsed.inputs[0].sighash_type == declared
 
 
 class TestSighashType:
