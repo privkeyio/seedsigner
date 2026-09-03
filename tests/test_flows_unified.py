@@ -140,13 +140,28 @@ class TestMixedSighashFlow(FlowTest):
 
 
 class TestSigningRaisesAfterApproval(FlowTest):
-    """A PSBT that parses and reviews but raises partway through signing.
+    """Signing mutates the inputs in place as it goes, so a PSBT that raises partway
+    leaves the signatures already made on the object the controller holds. Nothing
+    broadcasts it, because the controller only takes the trimmed PSBT on success, but
+    whatever runs next sees a PSBT that is neither the one scanned nor a signed one.
 
-    Signing mutates the inputs in place as it goes, so the object the controller
-    holds would keep the signatures made before the failure. Nothing broadcasts it,
-    because the controller only takes the trimmed PSBT on success, but whatever runs
-    next sees a PSBT that is neither the one scanned nor a signed one.
+    This fixture cannot reach PSBTFinalizeView: PSBTParser rejects it first, which
+    test_this_fixture_never_reaches_the_finalize_view records. So it demonstrates the
+    hazard and the fix at the point signing happens, not through the flow. Whether a
+    PSBT exists that parses and then raises is not settled either way here; signing on
+    a copy costs one serialize round trip and does not depend on the answer.
     """
+
+    def test_this_fixture_never_reaches_the_finalize_view(self):
+        """Stated rather than assumed: the class above would otherwise read as though
+        it were covering the flow."""
+        from base64 import b64decode
+
+        from embit.psbt import PSBT, PSBTError
+
+        with pytest.raises(PSBTError, match="Missing previous utxo"):
+            PSBTParser(PSBT.parse(b64decode(self.RAISING_PSBT)), seed=_seed(),
+                       network=SettingsConstants.MAINNET)
 
     RAISING_PSBT = "cHNidP8BANgCAAAAAsTXZs3fz/dmGb6M80+jjvJZdYya+cw5bT/dGuhZFdSlAAAAAAD9////qo6xg/UZAvUkcbse1F+C9zbP/FeZNjThx7SCIn6eMCgBAAAAAP3///8EQOIBAAAAAAAWABSkZPM7kLcTRE2En1t33/0RCHgMjQXYnnYAAAAAFgAUKMaPRKXdY4m8iKrE9j+rycskJU1A4gEAAAAAABYAFPYc9wiHRrYKAZYLLztREAwpPBIwipVcAwAAAAAWABSiFuiJIa4NrxLUBVQNS0NIun6DDtoRAABPAQQ1h88DBcQGZIAAAAA+0J+jlNL3dpWwlnBi8Dx+Ipg4e6uvB3HdjzFPX7r9CAOOlAIxgII+/xCcj+XoEenKH7wj5s5wlu7Q7CCZWFLGLhA5Su0UVAAAgAEAAIAAAACAAAEA7QIAAAAEE6njX/fnvn7hbkKIRcxzNYFOSfbCdNeWnd7Fe/1UcQ0BAAAAAP3///8TqeNf9+e+fuFuQohFzHM1gU5J9sJ015ad3sV7/VRxDQMAAAAA/f///xOp41/3575+4W5CiEXMczWBTkn2wnTXlp3exXv9VHENBAAAAAD9////E6njX/fnvn7hbkKIRcxzNYFOSfbCdNeWnd7Fe/1UcQ0GAAAAAP3///8CUnheAwAAAAAWABRCfygPJ+Fjsx4BknYvvm3A3qKn2xJ/XQcAAAAAF6kU1I4TAst5nAj15ey7vwe5cM3OFq+HlhEAAAEBH1J4XgMAAAAAFgAUQn8oDyfhY7MeAZJ2L75twN6ip9siBgKjux+bvxFBjcHmfRpz9AXxW0wDMWdyL6HkPUy2mBFjuhg5Su0UVAAAgAEAAIAAAACAAQAAAAYAAAAAIgYCEx5nmxADZPNQq2leMWSKapDY48NLSL3s5dSLJtTUR90YOUrtFFQAAIABAACAAAAAgAEAAAAAAAAAACICArk0+1p7olE6Tm41p2RR8yHhL1vT0wftSy1RTUCVRXiCGDlK7RRUAACAAQAAgAAAAIABAAAABwAAAAAiAgJPH94aXOQt+XIYEoPj3ts2fSIR0RHeGiltvsgDESBXqhg5Su0UVAAAgAEAAIAAAACAAQAAAAkAAAAAACICA47dQo765zDJ425kzSlAGKChA0W5iozY26vuj6ao926kGDlK7RRUAACAAQAAgAAAAIABAAAACAAAAAA="
 
@@ -378,3 +393,126 @@ class TestThePredictionAgreesWithTheSigner(FlowTest):
                 compared += 1
 
         assert compared > 100, f"only {compared} combinations were comparable"
+
+
+class TestTaproot(FlowTest):
+    """Every other fixture here is p2wpkh, so `inp.is_taproot` is False in all of them
+    and the branch that exists for taproot never runs.
+
+    Taproot is the one script type where DEFAULT is a real hash type rather than a
+    stand-in for ALL: a key path signature is 64 bytes and carries no trailing byte at
+    all. So 0x00 on the screen is correct here and wrong on segwit, which is exactly the
+    distinction the display got wrong before.
+    """
+
+    NETWORK = SettingsConstants.MAINNET
+    PATH = "m/86h/0h/0h/0/0"
+
+    def _psbt(self, declared):
+        from embit import bip32, script
+        from embit.psbt import PSBT, DerivationPath
+        from embit.transaction import Transaction, TransactionInput, TransactionOutput
+
+        root = _root()
+        pub = root.derive(self.PATH).to_public()
+        spk = script.p2tr(pub)
+
+        psbt = PSBT(Transaction(
+            vin=[TransactionInput(bytes(32), 0)],
+            vout=[TransactionOutput(90000, spk)],
+        ))
+        inp = psbt.inputs[0]
+        inp.witness_utxo = TransactionOutput(100000, spk)
+        inp.taproot_bip32_derivations[pub.key] = (
+            [], DerivationPath(root.my_fingerprint, bip32.parse_path(self.PATH))
+        )
+        inp.sighash_type = declared
+        return psbt
+
+    def test_the_input_really_is_taproot(self):
+        """Guards the rest of this class: if the fixture stopped being taproot the
+        assertions below would still pass while testing the segwit branch."""
+        assert self._psbt(None).inputs[0].is_taproot
+
+    @pytest.mark.parametrize("declared,expected", [
+        (None, SIGHASH.DEFAULT),
+        (SIGHASH.DEFAULT, SIGHASH.DEFAULT),
+        (SIGHASH.ALL, SIGHASH.ALL),
+        (SIGHASH.UNIFIED | SIGHASH.ALL, SIGHASH.UNIFIED | SIGHASH.ALL),
+    ])
+    def test_the_screen_matches_the_signature(self, declared, expected):
+        from embit.psbt import PSBT
+
+        psbt = self._psbt(declared)
+        shown = PSBTParser.screen_sighash_type(psbt, _seed(), self.NETWORK)
+        assert shown == expected
+
+        before = PSBTParser.signed_hash_types(psbt)
+        signed = PSBT.parse(psbt.serialize())
+        assert signed.sign_with(_root(), sighash=PSBTParser.sighash_type(signed)) == 1
+
+        added = {k: v for k, v in PSBTParser.signed_hash_types(signed).items() if k not in before}
+        assert added, "nothing was signed, so the assertion below would be vacuous"
+        assert set(added.values()) == {shown}, \
+            f"screen said {hex(shown)} but signatures carry {[hex(v) for v in added.values()]}"
+
+    def test_a_key_path_signature_carries_no_trailing_byte(self):
+        """Why DEFAULT survives on taproot: there is no byte to read it back from, so
+        signed_hash_types has to infer it from the length rather than the last byte."""
+        from embit.psbt import PSBT
+
+        signed = PSBT.parse(self._psbt(SIGHASH.DEFAULT).serialize())
+        signed.sign_with(_root(), sighash=SIGHASH.DEFAULT)
+
+        sigs = list(signed.inputs[0].taproot_sigs.values())
+        key_sig = getattr(signed.inputs[0], "taproot_key_sig", None)
+        if key_sig is not None:
+            sigs.append(key_sig)
+        elif signed.inputs[0].final_scriptwitness:
+            sigs.append(signed.inputs[0].final_scriptwitness.items[0])
+        assert len(bytes(sigs[0])) == 64
+        assert set(PSBTParser.signed_hash_types(signed).values()) == {SIGHASH.DEFAULT}
+
+
+class TestThePostConditionThroughTheView(FlowTest):
+    """The safety net, exercised where it actually sits.
+
+    Everything else here checks the prediction. This drives PSBTFinalizeView with the
+    prediction sabotaged, so the only thing standing between a mislabelled screen and a
+    signed QR is the check that reads the hash types back off the signatures.
+    """
+
+    def _run_finalize(self):
+        from base64 import b64decode
+        from unittest.mock import patch
+
+        from embit.psbt import PSBT
+
+        from seedsigner.controller import Controller
+
+        seed = _seed()
+        controller = Controller.get_instance()
+        controller.psbt = PSBT.parse(b64decode(TestUnifiedSighashFlow.UNIFIED_PSBT))
+        controller.psbt_seed = seed
+        controller.psbt_parser = PSBTParser(controller.psbt, seed=seed,
+                                            network=SettingsConstants.MAINNET)
+
+        with patch("seedsigner.views.view.View.run_screen") as run_screen:
+            run_screen.return_value = 0  # the user approves
+            return psbt_views.PSBTFinalizeView().run()
+
+    def test_a_truthful_screen_releases_the_signed_psbt(self):
+        destination = self._run_finalize()
+        assert destination.View_cls is psbt_views.PSBTSignedQRDisplayView
+
+    def test_a_lying_screen_stops_the_signed_psbt(self):
+        """Sabotage the prediction into naming a type nothing will be signed with. The
+        prediction is what the user saw, so the only correct outcome is to refuse."""
+        from unittest.mock import patch
+
+        wrong = SIGHASH.NONE  # nothing this device signs will ever carry it
+        with patch.object(PSBTParser, "screen_sighash_type", staticmethod(lambda *a, **k: wrong)):
+            destination = self._run_finalize()
+
+        assert destination.View_cls is psbt_views.PSBTUnsignableTransactionView, \
+            "a signature whose hash type differs from the screen reached the QR"
