@@ -764,6 +764,11 @@ class PSBTOpReturnScreen(ButtonListScreen):
 
 @dataclass
 class PSBTFinalizeScreen(ButtonListScreen):
+    # The hash type this device is about to sign with, as PSBTParser.sighash_type
+    # decides it. None only where the caller did not supply one.
+    sighash_type: int = None
+
+
     def __post_init__(self):
         # Customize defaults
         self.title = _("Sign Transaction")
@@ -783,3 +788,24 @@ class PSBTFinalizeScreen(ButtonListScreen):
             text=_("Click to approve this transaction"),
             screen_y=icon.screen_y + icon.height + 2*GUIConstants.COMPONENT_PADDING
         ))
+
+        # Which signature message is about to be produced. Shown in both states rather
+        # than only when the opt-in is used: a host that rewrites a request for the
+        # unified message down to the legacy one gets a legacy signature, and if only
+        # the opt-in were labelled, its absence would be indistinguishable from this
+        # screen never having said anything.
+        if self.sighash_type is not None:
+            from embit.transaction import SIGHASH
+
+            if self.sighash_type & SIGHASH.UNIFIED:
+                label = _("Unified sighash")
+            else:
+                label = _("Legacy sighash")
+
+            self.components.append(TextArea(
+                text=f"{label} (0x{self.sighash_type:02x})",
+                font_color=GUIConstants.LABEL_FONT_COLOR,
+                font_size=GUIConstants.LABEL_FONT_SIZE,
+                is_text_centered=True,
+                screen_y=self.components[-1].screen_y + self.components[-1].height + GUIConstants.COMPONENT_PADDING,
+            ))

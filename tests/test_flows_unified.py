@@ -16,9 +16,11 @@ class TestUnifiedSighashFlow(FlowTest):
     unified opt-in sighash. Same screens as test_flows_psbt, but the signature
     produced must carry hash type 0x21."""
 
+    UNIFIED_PSBT = "cHNidP8BANgCAAAAAsTXZs3fz/dmGb6M80+jjvJZdYya+cw5bT/dGuhZFdSlAAAAAAD9////qo6xg/UZAvUkcbse1F+C9zbP/FeZNjThx7SCIn6eMCgBAAAAAP3///8EQOIBAAAAAAAWABSkZPM7kLcTRE2En1t33/0RCHgMjQXYnnYAAAAAFgAUKMaPRKXdY4m8iKrE9j+rycskJU1A4gEAAAAAABYAFPYc9wiHRrYKAZYLLztREAwpPBIwipVcAwAAAAAWABSiFuiJIa4NrxLUBVQNS0NIun6DDtoRAABPAQQ1h88DBcQGZIAAAAA+0J+jlNL3dpWwlnBi8Dx+Ipg4e6uvB3HdjzFPX7r9CAOOlAIxgII+/xCcj+XoEenKH7wj5s5wlu7Q7CCZWFLGLhA5Su0UVAAAgAEAAIAAAACAAAEA7QIAAAAEE6njX/fnvn7hbkKIRcxzNYFOSfbCdNeWnd7Fe/1UcQ0BAAAAAP3///8TqeNf9+e+fuFuQohFzHM1gU5J9sJ015ad3sV7/VRxDQMAAAAA/f///xOp41/3575+4W5CiEXMczWBTkn2wnTXlp3exXv9VHENBAAAAAD9////E6njX/fnvn7hbkKIRcxzNYFOSfbCdNeWnd7Fe/1UcQ0GAAAAAP3///8CUnheAwAAAAAWABRCfygPJ+Fjsx4BknYvvm3A3qKn2xJ/XQcAAAAAF6kU1I4TAst5nAj15ey7vwe5cM3OFq+HlhEAAAEBH1J4XgMAAAAAFgAUQn8oDyfhY7MeAZJ2L75twN6ip9sBAwQhAAAAIgYCo7sfm78RQY3B5n0ac/QF8VtMAzFnci+h5D1MtpgRY7oYOUrtFFQAAIABAACAAAAAgAEAAAAGAAAAAAEAcQIAAAABxY7wh0nsfJQfzWrD/9rN9BYsM+iOmPaO6I0ANFgO/PcAAAAAAP3///8CptiUAAAAAAAWABRIm4HhQY/TzOjeWSPRrbuJo9MlW826oHYAAAAAFgAU0z+0L2QSLGtyQTn8FhbCpcI7jbliAQAAAQEfzbqgdgAAAAAWABTTP7QvZBIsa3JBOfwWFsKlwjuNuQEDBCEAAAAiBgITHmebEANk81CraV4xZIpqkNjjw0tIvezl1Ism1NRH3Rg5Su0UVAAAgAEAAIAAAACAAQAAAAAAAAAAIgICuTT7WnuiUTpObjWnZFHzIeEvW9PTB+1LLVFNQJVFeIIYOUrtFFQAAIABAACAAAAAgAEAAAAHAAAAACICAk8f3hpc5C35chgSg+Pe2zZ9IhHREd4aKW2+yAMRIFeqGDlK7RRUAACAAQAAgAAAAIABAAAACQAAAAAAIgIDjt1CjvrnMMnjbmTNKUAYoKEDRbmKjNjbq+6Ppqj3bqQYOUrtFFQAAIABAACAAAAAgAEAAAAIAAAAAA=="
+
     def test_scan_unified_psbt_and_sign(self):
         def load_psbt_into_decoder(view: scan_views.ScanView):
-            view.decoder.add_data("cHNidP8BANgCAAAAAsTXZs3fz/dmGb6M80+jjvJZdYya+cw5bT/dGuhZFdSlAAAAAAD9////qo6xg/UZAvUkcbse1F+C9zbP/FeZNjThx7SCIn6eMCgBAAAAAP3///8EQOIBAAAAAAAWABSkZPM7kLcTRE2En1t33/0RCHgMjQXYnnYAAAAAFgAUKMaPRKXdY4m8iKrE9j+rycskJU1A4gEAAAAAABYAFPYc9wiHRrYKAZYLLztREAwpPBIwipVcAwAAAAAWABSiFuiJIa4NrxLUBVQNS0NIun6DDtoRAABPAQQ1h88DBcQGZIAAAAA+0J+jlNL3dpWwlnBi8Dx+Ipg4e6uvB3HdjzFPX7r9CAOOlAIxgII+/xCcj+XoEenKH7wj5s5wlu7Q7CCZWFLGLhA5Su0UVAAAgAEAAIAAAACAAAEA7QIAAAAEE6njX/fnvn7hbkKIRcxzNYFOSfbCdNeWnd7Fe/1UcQ0BAAAAAP3///8TqeNf9+e+fuFuQohFzHM1gU5J9sJ015ad3sV7/VRxDQMAAAAA/f///xOp41/3575+4W5CiEXMczWBTkn2wnTXlp3exXv9VHENBAAAAAD9////E6njX/fnvn7hbkKIRcxzNYFOSfbCdNeWnd7Fe/1UcQ0GAAAAAP3///8CUnheAwAAAAAWABRCfygPJ+Fjsx4BknYvvm3A3qKn2xJ/XQcAAAAAF6kU1I4TAst5nAj15ey7vwe5cM3OFq+HlhEAAAEBH1J4XgMAAAAAFgAUQn8oDyfhY7MeAZJ2L75twN6ip9sBAwQhAAAAIgYCo7sfm78RQY3B5n0ac/QF8VtMAzFnci+h5D1MtpgRY7oYOUrtFFQAAIABAACAAAAAgAEAAAAGAAAAAAEAcQIAAAABxY7wh0nsfJQfzWrD/9rN9BYsM+iOmPaO6I0ANFgO/PcAAAAAAP3///8CptiUAAAAAAAWABRIm4HhQY/TzOjeWSPRrbuJo9MlW826oHYAAAAAFgAU0z+0L2QSLGtyQTn8FhbCpcI7jbliAQAAAQEfzbqgdgAAAAAWABTTP7QvZBIsa3JBOfwWFsKlwjuNuQEDBCEAAAAiBgITHmebEANk81CraV4xZIpqkNjjw0tIvezl1Ism1NRH3Rg5Su0UVAAAgAEAAIAAAACAAQAAAAAAAAAAIgICuTT7WnuiUTpObjWnZFHzIeEvW9PTB+1LLVFNQJVFeIIYOUrtFFQAAIABAACAAAAAgAEAAAAHAAAAACICAk8f3hpc5C35chgSg+Pe2zZ9IhHREd4aKW2+yAMRIFeqGDlK7RRUAACAAQAAgAAAAIABAAAACQAAAAAAIgIDjt1CjvrnMMnjbmTNKUAYoKEDRbmKjNjbq+6Ppqj3bqQYOUrtFFQAAIABAACAAAAAgAEAAAAIAAAAAA==")
+            view.decoder.add_data(self.UNIFIED_PSBT)
 
         captured = {}
 
@@ -177,3 +179,60 @@ class TestSigningRaisesAfterApproval(FlowTest):
 
         assert PSBTParser.sig_count(held) == 0
         assert held.serialize() == raw
+
+
+class TestTheHashTypeIsShown(FlowTest):
+    """The device signs whatever hash type the PSBT declares and used to display none
+    of it, so a host that rewrites a request for the unified message down to the legacy
+    one got a legacy signature and the same success screen.
+    """
+
+    @staticmethod
+    def _finalize_kwargs(psbt_b64):
+        """What PSBTFinalizeView hands the approval screen for this PSBT."""
+        from base64 import b64decode
+        from unittest.mock import patch
+
+        from embit.psbt import PSBT
+
+        from seedsigner.controller import Controller
+        from seedsigner.models.psbt_parser import PSBTParser
+        from seedsigner.models.seed import Seed
+        from embit.wordlists.bip39 import WORDLIST
+
+        digits = "080115060387063104071857067618681125136207731354"
+        seed = Seed(mnemonic=[WORDLIST[int(digits[i:i + 4])] for i in range(0, len(digits), 4)])
+
+        controller = Controller.get_instance()
+        controller.psbt = PSBT.parse(b64decode(psbt_b64))
+        controller.psbt_seed = seed
+        controller.psbt_parser = PSBTParser(controller.psbt, seed=seed, network=SettingsConstants.MAINNET)
+
+        with patch("seedsigner.views.view.View.run_screen") as run_screen:
+            run_screen.return_value = 0
+            psbt_views.PSBTFinalizeView().run()
+        assert run_screen.called, "the approval screen was never shown"
+        return run_screen.call_args.kwargs
+
+    def test_the_unified_opt_in_is_named(self):
+        kwargs = self._finalize_kwargs(TestUnifiedSighashFlow.UNIFIED_PSBT)
+        assert kwargs["sighash_type"] == SIGHASH.UNIFIED | SIGHASH.ALL
+
+    def test_a_downgraded_request_is_visibly_different(self):
+        """The case the display exists for: the PSBT asked for the unified message and
+        a host rewrote it, so the device must not present the two identically."""
+        from base64 import b64decode, b64encode
+
+        from embit.psbt import PSBT
+
+        psbt = PSBT.parse(b64decode(TestUnifiedSighashFlow.UNIFIED_PSBT))
+        for inp in psbt.inputs:
+            inp.sighash_type = SIGHASH.ALL
+        downgraded = b64encode(psbt.serialize()).decode()
+
+        unified = self._finalize_kwargs(TestUnifiedSighashFlow.UNIFIED_PSBT)["sighash_type"]
+        legacy = self._finalize_kwargs(downgraded)["sighash_type"]
+
+        assert unified == SIGHASH.UNIFIED | SIGHASH.ALL
+        assert legacy == SIGHASH.ALL
+        assert unified != legacy, "the screen would say the same thing for both"
