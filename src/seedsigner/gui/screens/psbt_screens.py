@@ -791,16 +791,21 @@ class PSBTFinalizeScreen(ButtonListScreen):
 
         # Which signature message is about to be produced. Shown in both states rather
         # than only when the opt-in is used: a host that rewrites a request for the
-        # unified message down to the legacy one gets a legacy signature, and if only
-        # the opt-in were labelled, its absence would be indistinguishable from this
-        # screen never having said anything.
+        # unified message down to the standard one gets a standard signature, and if
+        # only the opt-in were labelled, its absence would be indistinguishable from
+        # this screen never having said anything.
+        #
+        # The other state is "standard" rather than "legacy" because it is not one
+        # message: 0x00 on a taproot input is BIP-341's, 0x01 off taproot is BIP-143's,
+        # and calling either of them legacy would name the wrong algorithm on the one
+        # screen whose purpose is naming it.
         if self.sighash_type is not None:
             from embit.transaction import SIGHASH
 
             if self.sighash_type & SIGHASH.UNIFIED:
                 label = _("Unified sighash")
             else:
-                label = _("Legacy sighash")
+                label = _("Standard sighash")
 
             self.components.append(TextArea(
                 text=f"{label} (0x{self.sighash_type:02x})",

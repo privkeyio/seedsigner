@@ -127,8 +127,8 @@ class SeedSignerE2E(BitcoinTestFramework):
             psbt.inputs[0].sighash_type = declared
 
             # the view's own decision, so this cannot drift from what the device shows
-            shown = PSBTParser.screen_sighash_type(psbt, seed, SettingsConstants.REGTEST)
-            assert shown is not None, f"declared {declared}: the device would refuse this"
+            shown, reason = PSBTParser.screen_sighash_type(psbt, seed, SettingsConstants.REGTEST)
+            assert shown is not None, f"declared {declared}: the device would refuse it ({reason})"
 
             psbt.sign_with(root, sighash=PSBTParser.sighash_type(psbt))
             pub, sigbytes = list(psbt.inputs[0].partial_sigs.items())[0]

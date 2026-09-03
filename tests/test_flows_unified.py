@@ -283,7 +283,8 @@ class TestTheScreenNamesWhatIsSigned(FlowTest):
         The view's own decision, not a copy of it: a reimplementation here would stay
         green while the device did something else.
         """
-        return PSBTParser.screen_sighash_type(psbt, _seed(), self.NETWORK)
+        shown, _reason = PSBTParser.screen_sighash_type(psbt, _seed(), self.NETWORK)
+        return shown
 
     @pytest.mark.parametrize("declared,expected", [
         ([None, None], SIGHASH.ALL),
@@ -444,7 +445,8 @@ class TestTaproot(FlowTest):
         from embit.psbt import PSBT
 
         psbt = self._psbt(declared)
-        shown = PSBTParser.screen_sighash_type(psbt, _seed(), self.NETWORK)
+        shown, reason = PSBTParser.screen_sighash_type(psbt, _seed(), self.NETWORK)
+        assert reason is None
         assert shown == expected
 
         before = PSBTParser.signed_hash_types(psbt)
@@ -512,7 +514,7 @@ class TestThePostConditionThroughTheView(FlowTest):
         from unittest.mock import patch
 
         wrong = SIGHASH.NONE  # nothing this device signs will ever carry it
-        with patch.object(PSBTParser, "screen_sighash_type", staticmethod(lambda *a, **k: wrong)):
+        with patch.object(PSBTParser, "screen_sighash_type", staticmethod(lambda *a, **k: (wrong, None))):
             destination = self._run_finalize()
 
         assert destination.View_cls is psbt_views.PSBTUnsignableTransactionView, \
@@ -631,7 +633,7 @@ class TestAPlantedSignatureCannotMaskTheCheck(FlowTest):
             run_screen.return_value = 0  # the user approves
             if lie:
                 with patch.object(PSBTParser, "screen_sighash_type",
-                                  staticmethod(lambda *a, **k: SIGHASH.NONE)):
+                                  staticmethod(lambda *a, **k: (SIGHASH.NONE, None))):
                     return psbt_views.PSBTFinalizeView().run()
             return psbt_views.PSBTFinalizeView().run()
 
@@ -652,3 +654,75 @@ class TestAPlantedSignatureCannotMaskTheCheck(FlowTest):
         seeing the signature. Planting one in the slot must not hide it."""
         assert self._run_finalize(prefill, lie=True).View_cls is psbt_views.PSBTUnsignableTransactionView, \
             "a signature whose hash type differs from the screen reached the QR"
+
+
+class TestWhatTheDeviceRefusesToDescribe(FlowTest):
+    """`screen_sighash_type` refuses for two different reasons and the user is told
+    which. It also refuses to render a value the device would never sign."""
+
+    NETWORK = SettingsConstants.MAINNET
+
+    @staticmethod
+    def _one_input(declared, ours=True):
+        from embit import bip32, script
+        from embit.psbt import PSBT, DerivationPath
+        from embit.transaction import Transaction, TransactionInput, TransactionOutput
+
+        root = _root()
+        path = "m/84h/1h/0h/0/0"
+        pub = root.derive(path).to_public()
+        spk = script.p2wpkh(pub)
+
+        psbt = PSBT(Transaction(
+            vin=[TransactionInput(bytes(32), 0)],
+            vout=[TransactionOutput(90000, spk)],
+        ))
+        inp = psbt.inputs[0]
+        inp.witness_utxo = TransactionOutput(100000, spk)
+        if ours:
+            inp.bip32_derivations[pub.key] = DerivationPath(
+                root.my_fingerprint, bip32.parse_path(path))
+        inp.sighash_type = declared
+        return psbt
+
+    def test_an_input_that_would_be_skipped_says_so(self):
+        psbt = self._one_input(SIGHASH.NONE)
+        shown, reason = PSBTParser.screen_sighash_type(psbt, _seed(), self.NETWORK)
+        assert shown is None
+        assert reason == PSBTParser.REFUSED_PARTIAL
+
+    def test_types_no_single_label_covers_say_so_instead(self):
+        """Every input would be signed here, so telling the user part of it would go
+        unsigned would be false."""
+        from base64 import b64decode
+
+        from embit.psbt import PSBT
+
+        psbt = PSBT.parse(b64decode(TestMixedSighashFlow.MIXED_PSBT))
+        psbt.inputs[0].sighash_type = SIGHASH.UNIFIED | SIGHASH.ALL
+        psbt.inputs[1].sighash_type = SIGHASH.ALL
+
+        shown, reason = PSBTParser.screen_sighash_type(psbt, _seed(), self.NETWORK)
+        assert shown is None
+        assert reason == PSBTParser.REFUSED_MIXED
+
+    def test_a_type_the_device_would_never_sign_is_not_rendered(self):
+        """The declared type is four bytes off the wire with no bound. Where no input
+        matches this seed the whole transaction decides the label, so without this the
+        screen would name a hash type no signature could ever carry."""
+        psbt = self._one_input(0xdeadbeef, ours=False)
+        shown, reason = PSBTParser.screen_sighash_type(psbt, _seed(), self.NETWORK)
+        assert shown is None
+        assert reason is not None
+
+    def test_an_empty_signature_value_does_not_crash_the_readback(self):
+        """A host can leave any signature slot empty. The readback feeds the check that
+        gates the QR, so it has to survive anything that parses."""
+        from embit import script
+
+        pub = _root().derive("m/84h/1h/0h/0/0").to_public()
+        psbt = self._one_input(SIGHASH.ALL)
+        psbt.inputs[0].partial_sigs[pub.key] = b""
+
+        found = PSBTParser.signed_hash_types(psbt)
+        assert list(found.values())[0][0] is None, "an empty value has no hash type"

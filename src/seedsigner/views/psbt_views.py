@@ -537,11 +537,11 @@ class PSBTFinalizeView(View):
         # different behaviour. None means there is nothing honest to put on the screen:
         # an input this seed holds would be skipped, leaving the transaction signed in
         # part, or the inputs do not reduce to a single type.
-        shown_sighash = PSBTParser.screen_sighash_type(
+        shown_sighash, refused_because = PSBTParser.screen_sighash_type(
             psbt, psbt_parser.seed, psbt_parser.network
         )
         if shown_sighash is None:
-            return Destination(PSBTUnsignableSighashView)
+            return Destination(PSBTUnsignableSighashView, view_args=dict(reason=refused_because))
 
         selected_menu_num = self.run_screen(
             PSBTFinalizeScreen,
@@ -649,19 +649,31 @@ class PSBTUnsignableTransactionView(View):
 
 
 class PSBTUnsignableSighashView(View):
-    """Some input declares a signature hash type this device will not ask for.
+    """There is no single signature hash type that honestly describes this transaction.
 
-    Signing anyway would sign the inputs that agree and skip the rest, and the count
-    of signatures would go up, so it would report success and hand back a transaction
-    that cannot be broadcast.
+    Two different situations, and the user is told which. Either an input this seed
+    holds declares a type the device will not ask for, so signing would leave that input
+    unsigned while the signature count still rose; or every input would be signed, but
+    with types no one label covers, so the approval screen could not name what was about
+    to happen.
     """
+    def __init__(self, reason: str = None):
+        super().__init__()
+        self.reason = reason
+
+
     def run(self):
+        if self.reason == PSBTParser.REFUSED_MIXED:
+            text = _("This transaction's inputs ask to be signed in different ways, so this device cannot tell you what it would sign.")
+        else:
+            text = _("This transaction asks for a signature type this device does not sign. Signing it would only sign part of it.")
+
         self.run_screen(
             WarningScreen,
             title=_("Transaction Error"),
             status_icon_name=SeedSignerIconConstants.WARNING,
             status_headline=_("Cannot Sign"),
-            text=_("This transaction asks for a signature type this device does not sign. Signing it would only sign part of it."),
+            text=text,
             show_back_button=False,
             button_data=[ButtonOption("Done")],
         )

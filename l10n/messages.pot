@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: seedsigner 0.8.7\n"
 "Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
-"POT-Creation-Date: 2026-09-03 11:57-0400\n"
+"POT-Creation-Date: 2026-09-03 12:42-0400\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -180,7 +180,7 @@ msgid "Unified sighash"
 msgstr ""
 
 #: src/seedsigner/gui/screens/psbt_screens.py
-msgid "Legacy sighash"
+msgid "Standard sighash"
 msgstr ""
 
 #: src/seedsigner/gui/screens/scan_screens.py
@@ -978,6 +978,12 @@ msgstr ""
 
 #: src/seedsigner/views/psbt_views.py src/seedsigner/views/seed_views.py
 msgid "Done"
+msgstr ""
+
+#: src/seedsigner/views/psbt_views.py
+msgid ""
+"This transaction's inputs ask to be signed in different ways, so this "
+"device cannot tell you what it would sign."
 msgstr ""
 
 #: src/seedsigner/views/psbt_views.py

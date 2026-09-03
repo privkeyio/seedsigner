@@ -373,14 +373,22 @@ class PSBTParser():
         ]
 
 
+    # Why a transaction cannot be described by one hash type on the approval screen.
+    REFUSED_PARTIAL = "partial"   # an input this seed holds would be skipped
+    REFUSED_MIXED = "mixed"       # all would be signed, with types no one label covers
+
+
     @staticmethod
     def screen_sighash_type(tx, seed, network=SettingsConstants.MAINNET):
-        """The one hash type to name on the approval screen, or None to refuse.
+        """The hash type to name on the approval screen, and why not where there is none.
 
-        One place, so the view and the tests cannot describe different behaviour. None
-        means there is nothing honest to display: either an input this seed holds would
-        be skipped, leaving the transaction signed in part, or the inputs do not reduce
-        to a single type, so any one value on the screen would misdescribe some input.
+        Returns (hash_type, None) when there is one honest thing to show, and
+        (None, reason) otherwise. The two reasons are different situations and the user
+        is told different things: one means part of the transaction would go unsigned,
+        the other that every part would be signed but with types no single label
+        describes.
+
+        One place, so the view and the tests cannot describe different behaviour.
 
         Inputs this seed holds decide it where there are any. Where there are none the
         whole transaction does, because sign_with also matches the root key inside a
@@ -390,7 +398,7 @@ class PSBTParser():
         fingerprint = seed.get_fingerprint(network)
 
         if PSBTParser.unsignable_inputs(tx, seed=seed, network=network, fingerprint=fingerprint):
-            return None
+            return None, PSBTParser.REFUSED_PARTIAL
 
         ours = [
             inp for inp in tx.inputs
@@ -399,7 +407,17 @@ class PSBTParser():
         effective = {
             PSBTParser.effective_sighash_type(inp, requested) for inp in (ours or tx.inputs)
         }
-        return effective.pop() if len(effective) == 1 else None
+        if len(effective) != 1:
+            return None, PSBTParser.REFUSED_MIXED
+
+        # The declared type comes off the wire as four little endian bytes with no
+        # bound, so where no input matches this seed the fallback above can carry a
+        # value the device would never sign. Naming it on the approval screen would
+        # describe a signature that cannot exist.
+        shown = effective.pop()
+        if shown not in PSBTParser.SIGNABLE_SIGHASH_TYPES:
+            return None, PSBTParser.REFUSED_MIXED
+        return shown, None
 
 
     @staticmethod
@@ -415,22 +433,31 @@ class PSBTParser():
         """
         def hash_type(raw):
             # a taproot key path signature is 64 bytes and carries no trailing byte,
-            # which is SIGHASH_DEFAULT rather than an absent hash type
+            # which is SIGHASH_DEFAULT rather than an absent hash type. A value the host
+            # left empty has no hash type at all; it is reported as one nothing matches
+            # so it can never be mistaken for the type on the screen.
+            if not raw:
+                return None
             return raw[-1] if len(raw) != 64 else SIGHASH.DEFAULT
 
         found = {}
         for i, inp in enumerate(tx.inputs):
             for key, sig in inp.partial_sigs.items():
                 raw = bytes(sig)
-                found[(i, "partial", bytes(key.sec()))] = (raw[-1], raw)
+                found[(i, "partial", bytes(key.sec()))] = (hash_type(raw), raw)
             for key, sig in inp.taproot_sigs.items():
                 raw = bytes(sig)
                 found[(i, "taproot", str(key))] = (hash_type(raw), raw)
+            # Two separate reads, not one chained pair. The pinned embit puts a taproot
+            # key path signature in final_scriptwitness and has no taproot_key_sig at
+            # all; an embit that adds one while still writing the witness would, under
+            # an elif, silently stop this from reading the witness, and a signature
+            # would escape the check that this whole function exists to feed.
             key_sig = getattr(inp, "taproot_key_sig", None)
             if key_sig is not None:
                 raw = bytes(key_sig)
                 found[(i, "taproot_key", b"")] = (hash_type(raw), raw)
-            elif inp.final_scriptwitness and inp.final_scriptwitness.items:
+            if inp.final_scriptwitness and inp.final_scriptwitness.items:
                 raw = bytes(inp.final_scriptwitness.items[0])
                 found[(i, "witness", b"")] = (hash_type(raw), raw)
         return found
@@ -582,8 +609,13 @@ class PSBTParser():
             Extracts the fingerprint from each psbt input utxo. Returns True if any match
             the current seed.
         """
+        # Derived once. This runs for every stored seed on the seed-select screen, over
+        # every derivation of every input, and each call is an EC point multiply.
+        seed_fingerprint = seed.get_fingerprint(network)
+
         def check_fingerprint_match(public_key: PublicKey, derivation_path_obj: DerivationPath):
-            return PSBTParser._derivation_matches_seed(public_key, derivation_path_obj, seed, network)
+            return PSBTParser._derivation_matches_seed(
+                public_key, derivation_path_obj, seed, network, seed_fingerprint)
 
         # Check all derivations in all inputs
         for input in psbt.inputs:
