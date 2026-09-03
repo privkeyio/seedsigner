@@ -50,10 +50,14 @@ jobs:
             tests/requirements-ci.txt
             l10n/requirements-l10n.txt
             requirements.txt
+            tests/requirements.txt
       - name: Install dependencies
         run: |
           sudo apt-get install libzbar0
-          python -m pip install --upgrade pip
+          # pip itself is what enforces every hash below, so it is not upgraded here:
+          # doing so would fetch the verifier unpinned and unhashed before anything is
+          # checked. The runner's pip is used as it comes.
+          python -m pip --version
           # Fail loudly if the lock has drifted from the files it was generated from.
           # Names are compared PEP 503 normalized, because the lock is generated with
           # them lowercased (Pillow becomes pillow).
@@ -70,10 +74,10 @@ jobs:
           # git SHA pin cannot carry a hash, so the two git dependencies install on their
           # own. The SHA is itself immutable, and neither declares a runtime dependency,
           # so --no-deps leaves nothing floating.
-          # --no-build-isolation so the build backend is the hashed setuptools installed
-          # above rather than an unpinned one fetched at build time. Both of these build
-          # from source, so without it the one unhashed download in the job is the thing
-          # that runs arbitrary setup code.
+          # --no-build-isolation so the build backend is the setuptools and wheel pinned
+          # in tests/requirements-ci.txt rather than an unpinned pair fetched at build
+          # time. Both of these build from source, so without it the code that runs
+          # arbitrary setup steps would be the one unverified download in the job.
           grep '@ git+' requirements.txt | xargs -r -d '\n' pip install --no-deps --no-build-isolation
           pip install --no-build-isolation -e .
       - name: Compile translations

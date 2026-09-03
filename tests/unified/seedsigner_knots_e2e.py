@@ -126,14 +126,11 @@ class SeedSignerE2E(BitcoinTestFramework):
                 root.child(0).fingerprint, bip32.parse_path(path))
             psbt.inputs[0].sighash_type = declared
 
-            # exactly what PSBTFinalizeView computes for the screen
-            requested = PSBTParser.sighash_type(psbt)
-            assert PSBTParser.unsignable_inputs(psbt, seed=seed, network=SettingsConstants.REGTEST) == []
-            shown = {PSBTParser.effective_sighash_type(inp, requested) for inp in psbt.inputs}
-            assert len(shown) == 1, f"declared {declared}: no single type to display, {shown}"
-            shown = shown.pop()
+            # the view's own decision, so this cannot drift from what the device shows
+            shown = PSBTParser.screen_sighash_type(psbt, seed, SettingsConstants.REGTEST)
+            assert shown is not None, f"declared {declared}: the device would refuse this"
 
-            psbt.sign_with(root, sighash=requested)
+            psbt.sign_with(root, sighash=PSBTParser.sighash_type(psbt))
             pub, sigbytes = list(psbt.inputs[0].partial_sigs.items())[0]
             assert sigbytes[-1] == shown, \
                 f"screen would say {hex(shown)} but the signature carries {hex(sigbytes[-1])}"

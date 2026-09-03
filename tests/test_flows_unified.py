@@ -263,19 +263,12 @@ class TestTheScreenNamesWhatIsSigned(FlowTest):
         return psbt
 
     def _shown(self, psbt):
-        """What PSBTFinalizeView would put on the screen, or None if it refuses."""
-        seed = _seed()
-        requested = PSBTParser.sighash_type(psbt)
-        if PSBTParser.unsignable_inputs(psbt, seed=seed, network=self.NETWORK):
-            return None
-        effective = {
-            PSBTParser.effective_sighash_type(inp, requested)
-            for inp in psbt.inputs
-            if PSBTParser._input_is_ours(inp, seed, self.NETWORK)
-        }
-        if len(effective) > 1:
-            return None
-        return effective.pop() if effective else requested
+        """What PSBTFinalizeView puts on the screen, or None if it refuses.
+
+        The view's own decision, not a copy of it: a reimplementation here would stay
+        green while the device did something else.
+        """
+        return PSBTParser.screen_sighash_type(psbt, _seed(), self.NETWORK)
 
     @pytest.mark.parametrize("declared,expected", [
         ([None, None], SIGHASH.ALL),

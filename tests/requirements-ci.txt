@@ -1,5 +1,7 @@
 # Hash-pinned dependencies for CI, covering everything in requirements.txt and
-# tests/requirements.txt that comes from PyPI, plus their transitive dependencies.
+# tests/requirements.txt that comes from PyPI, plus their transitive dependencies, plus
+# the build backend so that --no-build-isolation resolves to a pinned setuptools rather
+# than whatever the runner image happens to carry.
 #
 # pip applies --require-hashes to every requirement in a command, and a git SHA pin
 # cannot carry a hash, so embit and pyzbar are installed in a separate command. Both
@@ -9,7 +11,8 @@
 # Regenerate after changing either source file:
 #   uv pip compile --generate-hashes --python-version 3.10 \
 #       -o tests/requirements-ci.txt - <<'DEPS'
-#   <the non-git lines of requirements.txt and tests/requirements.txt>
+#   <the non-git lines of requirements.txt and tests/requirements.txt, plus
+#    setuptools and wheel at the versions below>
 #   DEPS
 coverage==7.6.12 \
     --hash=sha256:00b2086892cf06c7c2d74983c9595dc511acca00665480b3ddff749ec4fb2a95 \
@@ -76,7 +79,7 @@ coverage==7.6.12 \
     --hash=sha256:f60a297c3987c6c02ffb29effc70eadcbb412fe76947d394a1091a3615948e2f \
     --hash=sha256:f973643ef532d4f9be71dd88cf7588936685fdb576d93a79fe9f65bc337d9d73
     # via
-    #   -r ci-in.txt
+    #   -r ci-in2.txt
     #   pytest-cov
 exceptiongroup==1.3.1 \
     --hash=sha256:8b412432c6055b0b7d14c310000ae93352ed6754f70fa8f7c34141f91c4e3219 \
@@ -160,7 +163,7 @@ pillow==10.3.0 \
     --hash=sha256:f0d0591a0aeaefdaf9a5e545e7485f89910c977087e7de2b6c388aec32011e9f \
     --hash=sha256:fdcbb4068117dfd9ce0138d068ac512843c52295ed996ae6dd1faf537b6dbc27 \
     --hash=sha256:ff61bfd9253c3915e6d41c651d5f962da23eda633cf02262990094a18a55371a
-    # via -r ci-in.txt
+    # via -r ci-in2.txt
 pluggy==1.6.0 \
     --hash=sha256:7dcc130b76258d33b90f61b658791dede3486c3e6bfb003ee5c9bfb396dd22f3 \
     --hash=sha256:e920276dd6813095e9377c0bc5566d94c932c33b27a3e3945d8389c374dd4746
@@ -169,15 +172,19 @@ pytest==7.4.2 \
     --hash=sha256:1d881c6124e08ff0a1bb75ba3ec0bfd8b5354a01c194ddd5a0a870a48d99b002 \
     --hash=sha256:a766259cfab564a2ad52cb1aae1b881a75c3eb7e34ca3779697c23ed47c47069
     # via
-    #   -r ci-in.txt
+    #   -r ci-in2.txt
     #   pytest-cov
 pytest-cov==4.1.0 \
     --hash=sha256:3904b13dfbfec47f003b8e77fd5b589cd11904a21ddf1ab38a64f204d6a10ef6 \
     --hash=sha256:6ba70b9e97e69fcc3fb45bfeab2d0a138fb65c4d0d6a41ef33983ad114be8c3a
-    # via -r ci-in.txt
+    # via -r ci-in2.txt
 qrcode==7.3.1 \
     --hash=sha256:375a6ff240ca9bd41adc070428b5dfc1dcfbb0f2507f1ac848f6cded38956578
-    # via -r ci-in.txt
+    # via -r ci-in2.txt
+setuptools==84.0.0 \
+    --hash=sha256:51a52592b3b99e102b609654876bd65f19f999935166d1352678931132b0c670 \
+    --hash=sha256:f4695c21257f0d9b537ec2692c941d02ee143b7cc1276941349a546573b2ef73
+    # via -r ci-in2.txt
 tomli==2.4.1 \
     --hash=sha256:01f520d4f53ef97964a240a035ec2a869fe1a37dde002b57ebc4417a27ccd853 \
     --hash=sha256:0d85819802132122da43cb86656f8d1f8c6587d54ae7dcaf30e90533028b49fe \
@@ -236,4 +243,8 @@ typing-extensions==4.16.0 \
 urtypes==1.0.1 \
     --hash=sha256:3b6911c6a888c6924da3487f20df75cc60960ba94a2a95c20dc3ffa84ff6aae3 \
     --hash=sha256:4f1cd0ef34c21ae6f408520ecd9de0d2d157ee885b94ad9e6481cfbb3838558e
-    # via -r ci-in.txt
+    # via -r ci-in2.txt
+wheel==0.45.1 \
+    --hash=sha256:661e1abd9198507b1409a20c02106d9670b2576e916d58f520316666abca6729 \
+    --hash=sha256:708e7481cc80179af0e556bbf0cc00b8444c7321e2700b8d8580231d13017248
+    # via -r ci-in2.txt
