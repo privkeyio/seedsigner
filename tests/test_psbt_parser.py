@@ -5,6 +5,7 @@ from binascii import a2b_base64
 from embit import bip32
 from embit.psbt import PSBT
 from embit.descriptor import Descriptor
+from embit.script import Witness
 from embit.transaction import SIGHASH
 
 from seedsigner.models.psbt_parser import PSBTParser
@@ -520,6 +521,17 @@ class TestTrimCarriesTheDeclaredType:
     def test_the_declared_type_survives_trimming(self, declared):
         trimmed = PSBTParser.trim(self._psbt(declared))
         assert [inp.sighash_type for inp in trimmed.inputs] == declared
+
+    def test_a_finalized_input_is_left_alone(self):
+        """BIP-174 has a finalizer strip everything but the final fields. A taproot key
+        path spend is finalized by the time trim runs and its witness already carries
+        the hash type, so the declared field is not re-emitted there."""
+        psbt = self._psbt([SIGHASH.UNIFIED | SIGHASH.ALL])
+        psbt.inputs[0].final_scriptwitness = Witness([bytes(64)])
+
+        trimmed = PSBTParser.trim(psbt)
+        assert trimmed.inputs[0].final_scriptwitness is not None
+        assert trimmed.inputs[0].sighash_type is None
 
     def test_it_survives_serialization(self):
         """The trimmed PSBT is what leaves the device, so the field has to be on the

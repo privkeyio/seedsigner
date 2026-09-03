@@ -533,16 +533,35 @@ class PSBTFinalizeView(View):
             # Should not be able to get here
             return Destination(MainMenuView)
 
+        # Resolved once, here, and used for the refusal, the display and the signing
+        # call below. Recomputing it at each of those would let them disagree, and the
+        # whole point of the display is that it names what is about to be signed.
+        requested_sighash = PSBTParser.sighash_type(psbt)
+
         # Checked before the approval screen rather than after it: signing these would
-        # produce a transaction signed in part, which cannot be broadcast, and the user
-        # should not be asked to approve something that will not be signed.
-        if PSBTParser.unsignable_inputs(psbt):
+        # produce a transaction signed less completely than this device reports, and the
+        # user should not be asked to approve something that will not be signed. Scoped
+        # to this seed's own inputs; a co-signer finishes the rest.
+        if PSBTParser.unsignable_inputs(psbt, seed=self.controller.psbt_seed, network=self.settings.get_value(SettingsConstants.SETTING__NETWORK)):
+            return Destination(PSBTUnsignableSighashView)
+
+        # What each input will actually be signed with, which is not the value asked
+        # for: an input declaring nothing takes the request, and DEFAULT means ALL off
+        # taproot. Where they do not all reduce to one type there is no honest single
+        # thing to put on the screen, so the transaction is refused rather than
+        # described by a type none of its signatures will carry.
+        effective = {
+            PSBTParser.effective_sighash_type(inp, requested_sighash)
+            for inp in psbt.inputs
+            if PSBTParser._input_is_ours(inp, self.controller.psbt_seed, self.settings.get_value(SettingsConstants.SETTING__NETWORK))
+        }
+        if len(effective) > 1:
             return Destination(PSBTUnsignableSighashView)
 
         selected_menu_num = self.run_screen(
             PSBTFinalizeScreen,
             button_data=[self.APPROVE_PSBT],
-            sighash_type=PSBTParser.sighash_type(psbt),
+            sighash_type=effective.pop() if effective else requested_sighash,
         )
 
         if selected_menu_num == RET_CODE__BACK_BUTTON:
@@ -552,23 +571,23 @@ class PSBTFinalizeView(View):
             # Sign PSBT
             sig_cnt = PSBTParser.sig_count(psbt)
 
-            # Signed on a copy. The PSBT comes off a QR from a host this device does
-            # not trust, and signing mutates the inputs in place as it goes, so a
-            # malformed one that raises partway through would otherwise leave a
-            # half-signed object on the controller for whatever runs next.
-            signing_psbt = PSBT.parse(psbt.serialize())
-
             try:
+                # Signed on a copy. The PSBT comes off a QR from a host this device does
+                # not trust, and signing mutates the inputs in place as it goes, so a
+                # malformed one that raises partway through would otherwise leave a
+                # half-signed object on the controller for whatever runs next. The round
+                # trip is inside the try for the same reason the signing is.
+                signing_psbt = PSBT.parse(psbt.serialize())
                 # Name the hash type the PSBT asks for rather than relying on the
                 # signer's default. The unified opt-in selects a signature hash
                 # algorithm, so which one gets used is worth stating here rather
                 # than inheriting from whichever embit happens to be installed.
-                signing_psbt.sign_with(psbt_parser.root, sighash=PSBTParser.sighash_type(signing_psbt))
+                signing_psbt.sign_with(psbt_parser.root, sighash=requested_sighash)
             except Exception as e:
                 # Any failure here is a property of the PSBT, which is untrusted input,
                 # rather than of the seed. Logged so a genuine defect is still visible.
                 logger.exception("signing raised on a PSBT the user had approved: %s", e)
-                return Destination(PSBTSigningErrorView)
+                return Destination(PSBTUnsignableTransactionView)
 
             trimmed_psbt = PSBTParser.trim(signing_psbt)
 
@@ -596,6 +615,28 @@ class PSBTSignedQRDisplayView(View):
 
         # We're done with this PSBT. Route back to MainMenuView which always
         #   clears all ephemeral data (except in-memory seeds).
+        return Destination(MainMenuView, clear_history=True)
+
+
+
+class PSBTUnsignableTransactionView(View):
+    """Signing raised on a PSBT the user had already approved.
+
+    Kept separate from PSBTSigningErrorView, which offers a different seed. The failure
+    is a property of the transaction, so walking the user through every seed on the
+    device would hit the same failure each time while telling them their seeds are at
+    fault.
+    """
+    def run(self):
+        self.run_screen(
+            WarningScreen,
+            title=_("Transaction Error"),
+            status_icon_name=SeedSignerIconConstants.WARNING,
+            status_headline=_("Cannot Sign"),
+            text=_("This transaction could not be signed. Nothing was signed and nothing was sent."),
+            show_back_button=False,
+            button_data=[ButtonOption("Done")],
+        )
         return Destination(MainMenuView, clear_history=True)
 
 

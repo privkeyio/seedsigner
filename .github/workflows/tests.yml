@@ -47,12 +47,22 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: "pip"
           cache-dependency-path: |
+            tests/requirements-ci.txt
+            l10n/requirements-l10n.txt
             requirements.txt
-            tests/requirements.txt
       - name: Install dependencies
         run: |
           sudo apt-get install libzbar0
           python -m pip install --upgrade pip
+          # Fail loudly if the lock has drifted from the files it was generated from.
+          # Names are compared PEP 503 normalized, because the lock is generated with
+          # them lowercased (Pillow becomes pillow).
+          for pkg in $(grep -hvE '^\s*#|^\s*$|@ git\+' requirements.txt tests/requirements.txt); do
+            name=$(echo "${pkg%%==*}" | tr 'A-Z' 'a-z' | tr '_.' '--')
+            norm="${name}==${pkg#*==}"
+            grep -qxF "${norm} \\" tests/requirements-ci.txt || {
+              echo "::error::${pkg} is not pinned in tests/requirements-ci.txt; regenerate it"; exit 1; }
+          done
           # Everything from PyPI, with its transitive dependencies, verified by hash.
           pip install --require-hashes -r tests/requirements-ci.txt
           pip install --require-hashes -r l10n/requirements-l10n.txt
@@ -60,8 +70,12 @@ jobs:
           # git SHA pin cannot carry a hash, so the two git dependencies install on their
           # own. The SHA is itself immutable, and neither declares a runtime dependency,
           # so --no-deps leaves nothing floating.
-          grep '@ git+' requirements.txt | xargs -r -d '\n' pip install --no-deps
-          pip install -e .
+          # --no-build-isolation so the build backend is the hashed setuptools installed
+          # above rather than an unpinned one fetched at build time. Both of these build
+          # from source, so without it the one unhashed download in the job is the thing
+          # that runs arbitrary setup code.
+          grep '@ git+' requirements.txt | xargs -r -d '\n' pip install --no-deps --no-build-isolation
+          pip install --no-build-isolation -e .
       - name: Compile translations
         run: python setup.py compile_catalog
       - name: Test with pytest

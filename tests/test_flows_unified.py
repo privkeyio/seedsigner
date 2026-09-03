@@ -11,6 +11,23 @@ from seedsigner.models.psbt_parser import PSBTParser
 from embit.transaction import SIGHASH
 
 
+SEED_DIGITS = "080115060387063104071857067618681125136207731354"
+
+
+def _seed():
+    from embit.wordlists.bip39 import WORDLIST
+
+    from seedsigner.models.seed import Seed
+
+    return Seed(mnemonic=[WORDLIST[int(SEED_DIGITS[i:i + 4])] for i in range(0, len(SEED_DIGITS), 4)])
+
+
+def _root():
+    from embit.bip32 import HDKey
+
+    return HDKey.from_seed(_seed().seed_bytes)
+
+
 class TestUnifiedSighashFlow(FlowTest):
     """The full SeedSigner UI flow, driven with a PSBT that asks for the
     unified opt-in sighash. Same screens as test_flows_psbt, but the signature
@@ -104,11 +121,7 @@ class TestMixedSighashFlow(FlowTest):
         asserting only on the screen the flow reached."""
         from base64 import b64decode
 
-        from embit.bip32 import HDKey
         from embit.psbt import PSBT
-        from embit.wordlists.bip39 import WORDLIST
-
-        from seedsigner.models.seed import Seed
 
         psbt = PSBT.parse(b64decode(self.MIXED_PSBT))
         assert [inp.sighash_type for inp in psbt.inputs] == [
@@ -116,10 +129,8 @@ class TestMixedSighashFlow(FlowTest):
         ]
         assert PSBTParser.unsignable_inputs(psbt) == [1]
 
-        digits = "080115060387063104071857067618681125136207731354"
-        seed = Seed(mnemonic=[WORDLIST[int(digits[i:i + 4])] for i in range(0, len(digits), 4)])
         before = PSBTParser.sig_count(psbt)
-        psbt.sign_with(HDKey.from_seed(seed.seed_bytes), sighash=PSBTParser.sighash_type(psbt))
+        psbt.sign_with(_root(), sighash=PSBTParser.sighash_type(psbt))
         after = PSBTParser.sig_count(psbt)
 
         assert before == 0
@@ -139,17 +150,6 @@ class TestSigningRaisesAfterApproval(FlowTest):
 
     RAISING_PSBT = "cHNidP8BANgCAAAAAsTXZs3fz/dmGb6M80+jjvJZdYya+cw5bT/dGuhZFdSlAAAAAAD9////qo6xg/UZAvUkcbse1F+C9zbP/FeZNjThx7SCIn6eMCgBAAAAAP3///8EQOIBAAAAAAAWABSkZPM7kLcTRE2En1t33/0RCHgMjQXYnnYAAAAAFgAUKMaPRKXdY4m8iKrE9j+rycskJU1A4gEAAAAAABYAFPYc9wiHRrYKAZYLLztREAwpPBIwipVcAwAAAAAWABSiFuiJIa4NrxLUBVQNS0NIun6DDtoRAABPAQQ1h88DBcQGZIAAAAA+0J+jlNL3dpWwlnBi8Dx+Ipg4e6uvB3HdjzFPX7r9CAOOlAIxgII+/xCcj+XoEenKH7wj5s5wlu7Q7CCZWFLGLhA5Su0UVAAAgAEAAIAAAACAAAEA7QIAAAAEE6njX/fnvn7hbkKIRcxzNYFOSfbCdNeWnd7Fe/1UcQ0BAAAAAP3///8TqeNf9+e+fuFuQohFzHM1gU5J9sJ015ad3sV7/VRxDQMAAAAA/f///xOp41/3575+4W5CiEXMczWBTkn2wnTXlp3exXv9VHENBAAAAAD9////E6njX/fnvn7hbkKIRcxzNYFOSfbCdNeWnd7Fe/1UcQ0GAAAAAP3///8CUnheAwAAAAAWABRCfygPJ+Fjsx4BknYvvm3A3qKn2xJ/XQcAAAAAF6kU1I4TAst5nAj15ey7vwe5cM3OFq+HlhEAAAEBH1J4XgMAAAAAFgAUQn8oDyfhY7MeAZJ2L75twN6ip9siBgKjux+bvxFBjcHmfRpz9AXxW0wDMWdyL6HkPUy2mBFjuhg5Su0UVAAAgAEAAIAAAACAAQAAAAYAAAAAIgYCEx5nmxADZPNQq2leMWSKapDY48NLSL3s5dSLJtTUR90YOUrtFFQAAIABAACAAAAAgAEAAAAAAAAAACICArk0+1p7olE6Tm41p2RR8yHhL1vT0wftSy1RTUCVRXiCGDlK7RRUAACAAQAAgAAAAIABAAAABwAAAAAiAgJPH94aXOQt+XIYEoPj3ts2fSIR0RHeGiltvsgDESBXqhg5Su0UVAAAgAEAAIAAAACAAQAAAAkAAAAAACICA47dQo765zDJ425kzSlAGKChA0W5iozY26vuj6ao926kGDlK7RRUAACAAQAAgAAAAIABAAAACAAAAAA="
 
-    @staticmethod
-    def _root():
-        from embit.bip32 import HDKey
-        from embit.wordlists.bip39 import WORDLIST
-
-        from seedsigner.models.seed import Seed
-
-        digits = "080115060387063104071857067618681125136207731354"
-        seed = Seed(mnemonic=[WORDLIST[int(digits[i:i + 4])] for i in range(0, len(digits), 4)])
-        return HDKey.from_seed(seed.seed_bytes)
-
     def test_signing_in_place_leaves_a_half_signed_psbt(self):
         """The hazard itself, so the fix below is measured against something real."""
         from base64 import b64decode
@@ -158,8 +158,12 @@ class TestSigningRaisesAfterApproval(FlowTest):
 
         raw = b64decode(self.RAISING_PSBT)
         held = PSBT.parse(raw)
-        with pytest.raises(Exception):
-            held.sign_with(self._root(), sighash=PSBTParser.sighash_type(held))
+        # input 1 carries a derivation but no utxo of either kind, so resolving its
+        # script_pubkey dereferences None. Asserted precisely: embit's own comments show
+        # it moving toward skipping these, and this test should fail loudly if it does
+        # rather than passing on whatever exception replaces it.
+        with pytest.raises(AttributeError, match="script_pubkey"):
+            held.sign_with(_root(), sighash=PSBTParser.sighash_type(held))
 
         assert PSBTParser.sig_count(held) == 1, "expected one input signed before the failure"
         assert held.serialize() != raw, "expected the object to have been mutated"
@@ -174,8 +178,8 @@ class TestSigningRaisesAfterApproval(FlowTest):
 
         # what the view does now
         signing_psbt = PSBT.parse(held.serialize())
-        with pytest.raises(Exception):
-            signing_psbt.sign_with(self._root(), sighash=PSBTParser.sighash_type(signing_psbt))
+        with pytest.raises(AttributeError, match="script_pubkey"):
+            signing_psbt.sign_with(_root(), sighash=PSBTParser.sighash_type(signing_psbt))
 
         assert PSBTParser.sig_count(held) == 0
         assert held.serialize() == raw
@@ -197,11 +201,8 @@ class TestTheHashTypeIsShown(FlowTest):
 
         from seedsigner.controller import Controller
         from seedsigner.models.psbt_parser import PSBTParser
-        from seedsigner.models.seed import Seed
-        from embit.wordlists.bip39 import WORDLIST
 
-        digits = "080115060387063104071857067618681125136207731354"
-        seed = Seed(mnemonic=[WORDLIST[int(digits[i:i + 4])] for i in range(0, len(digits), 4)])
+        seed = _seed()
 
         controller = Controller.get_instance()
         controller.psbt = PSBT.parse(b64decode(psbt_b64))
@@ -236,3 +237,138 @@ class TestTheHashTypeIsShown(FlowTest):
         assert unified == SIGHASH.UNIFIED | SIGHASH.ALL
         assert legacy == SIGHASH.ALL
         assert unified != legacy, "the screen would say the same thing for both"
+
+
+class TestTheScreenNamesWhatIsSigned(FlowTest):
+    """The invariant the display rests on: the type on the approval screen is the byte
+    every signature actually carries.
+
+    These two differ. `PSBTParser.sighash_type` is the value handed to sign_with; the
+    byte a signature carries is what sign_with resolves per input from it. For the two
+    commonest PSBTs, one declaring nothing and one declaring ALL, the request is DEFAULT
+    and the signature is ALL, so showing the request would name a byte no signature has.
+    """
+
+    NETWORK = SettingsConstants.MAINNET
+
+    @staticmethod
+    def _psbt(declared):
+        from base64 import b64decode
+
+        from embit.psbt import PSBT
+
+        psbt = PSBT.parse(b64decode(TestMixedSighashFlow.MIXED_PSBT))
+        for i, sh in enumerate(declared):
+            psbt.inputs[i].sighash_type = sh
+        return psbt
+
+    def _shown(self, psbt):
+        """What PSBTFinalizeView would put on the screen, or None if it refuses."""
+        seed = _seed()
+        requested = PSBTParser.sighash_type(psbt)
+        if PSBTParser.unsignable_inputs(psbt, seed=seed, network=self.NETWORK):
+            return None
+        effective = {
+            PSBTParser.effective_sighash_type(inp, requested)
+            for inp in psbt.inputs
+            if PSBTParser._input_is_ours(inp, seed, self.NETWORK)
+        }
+        if len(effective) > 1:
+            return None
+        return effective.pop() if effective else requested
+
+    @pytest.mark.parametrize("declared,expected", [
+        ([None, None], SIGHASH.ALL),
+        ([SIGHASH.ALL, SIGHASH.ALL], SIGHASH.ALL),
+        ([None, SIGHASH.ALL], SIGHASH.ALL),
+        ([SIGHASH.DEFAULT, SIGHASH.DEFAULT], SIGHASH.ALL),
+        ([SIGHASH.UNIFIED | SIGHASH.ALL] * 2, SIGHASH.UNIFIED | SIGHASH.ALL),
+    ])
+    def test_the_screen_matches_every_signature_byte(self, declared, expected):
+        psbt = self._psbt(declared)
+        shown = self._shown(psbt)
+        assert shown == expected, f"screen would say {hex(shown)}, expected {hex(expected)}"
+
+        psbt.sign_with(_root(), sighash=PSBTParser.sighash_type(psbt))
+        produced = {bytes(sig)[-1] for inp in psbt.inputs for sig in inp.partial_sigs.values()}
+        assert produced, "nothing was signed, so the assertion below would be vacuous"
+        assert produced == {shown}, \
+            f"screen said {hex(shown)} but signatures carry {[hex(b) for b in produced]}"
+
+    def test_a_psbt_with_no_honest_single_label_is_refused(self):
+        """Inputs declaring 0x21 and 0x01 both sign, with different bytes. The request
+        collapses to DEFAULT, which no signature carries, so there is nothing true to
+        put on the screen and the transaction is refused instead."""
+        psbt = self._psbt([SIGHASH.UNIFIED | SIGHASH.ALL, SIGHASH.ALL])
+        assert PSBTParser.unsignable_inputs(psbt, seed=_seed(), network=self.NETWORK) == []
+        assert self._shown(psbt) is None
+
+        # and what it would have produced, had it not been refused
+        psbt.sign_with(_root(), sighash=PSBTParser.sighash_type(psbt))
+        produced = {bytes(sig)[-1] for inp in psbt.inputs for sig in inp.partial_sigs.values()}
+        assert produced == {SIGHASH.UNIFIED | SIGHASH.ALL, SIGHASH.ALL}
+
+    def test_an_input_this_seed_does_not_hold_is_not_our_problem(self):
+        """A counterparty input declaring anything it likes must not stop this device
+        signing its own. Refusing there would break collaborative transactions and hand
+        a hostile host a way to block signing by appending one input."""
+        psbt = self._psbt([SIGHASH.UNIFIED | SIGHASH.ALL, SIGHASH.NONE])
+        psbt.inputs[1].bip32_derivations.clear()
+
+        assert PSBTParser.unsignable_inputs(psbt, seed=_seed(), network=self.NETWORK) == []
+        assert self._shown(psbt) == SIGHASH.UNIFIED | SIGHASH.ALL
+
+        assert psbt.sign_with(_root(), sighash=PSBTParser.sighash_type(psbt)) == 1
+
+    def test_our_own_input_declaring_it_is_still_refused(self):
+        psbt = self._psbt([SIGHASH.UNIFIED | SIGHASH.ALL, SIGHASH.NONE])
+        assert PSBTParser.unsignable_inputs(psbt, seed=_seed(), network=self.NETWORK) == [1]
+
+
+class TestThePredictionAgreesWithTheSigner(FlowTest):
+    """`unsignable_inputs` predicts which inputs sign_with will skip. Prediction is only
+    as good as the code it mirrors, and embit is a pinned dependency that moves.
+
+    This signs for real across the matrix and compares, so the day the pin moves in a
+    way that changes which inputs get skipped, this fails rather than the device quietly
+    reporting success on a transaction it signed less of than it said.
+    """
+
+    NETWORK = SettingsConstants.MAINNET
+
+    def test_predicted_skips_match_what_signing_actually_does(self):
+        from base64 import b64decode
+
+        from embit.psbt import PSBT
+
+        seed = _seed()
+        root = _root()
+        raw = b64decode(TestMixedSighashFlow.MIXED_PSBT)
+        values = [None, 0x00, 0x01, 0x02, 0x03, 0x20, 0x21, 0x22, 0x23, 0x81, 0xa1, 0x05, 0xff]
+
+        compared = 0
+        for a in values:
+            for b in values:
+                psbt = PSBT.parse(raw)
+                psbt.inputs[0].sighash_type = a
+                psbt.inputs[1].sighash_type = b
+
+                predicted = PSBTParser.unsignable_inputs(psbt, seed=seed, network=self.NETWORK)
+                requested = PSBTParser.sighash_type(psbt)
+                try:
+                    psbt.sign_with(root, sighash=requested)
+                except Exception:
+                    # an undefined hash type raises rather than skipping; not a skip
+                    continue
+
+                ours = [i for i, inp in enumerate(psbt.inputs)
+                        if PSBTParser._input_is_ours(inp, seed, self.NETWORK)]
+                actually_skipped = [i for i in ours if not psbt.inputs[i].partial_sigs]
+
+                assert predicted == actually_skipped, (
+                    f"declared {a!r}/{b!r}: predicted skips {predicted}, "
+                    f"signing actually skipped {actually_skipped}"
+                )
+                compared += 1
+
+        assert compared > 100, f"only {compared} combinations were comparable"
