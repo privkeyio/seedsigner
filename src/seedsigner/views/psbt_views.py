@@ -580,10 +580,14 @@ class PSBTFinalizeView(View):
             # derivation to predict from, so what was produced is read back off the
             # signatures rather than worked out in advance. Nothing reaches the QR unless
             # every signature this call added carries the byte the user was shown.
+            # Compared by signature, not by which slots are occupied. A host can plant
+            # a signature in any slot this device is about to fill, and matching on the
+            # slot alone would then read the real one as something that was already
+            # there and never check it.
             added = {
                 where: hash_type
-                for where, hash_type in PSBTParser.signed_hash_types(signing_psbt).items()
-                if where not in before
+                for where, (hash_type, raw) in PSBTParser.signed_hash_types(signing_psbt).items()
+                if before.get(where, (None, None))[1] != raw
             }
             if set(added.values()) - {shown_sighash}:
                 logger.error(

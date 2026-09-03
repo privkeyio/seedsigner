@@ -404,25 +404,35 @@ class PSBTParser():
 
     @staticmethod
     def signed_hash_types(tx):
-        """The hash type byte carried by each signature, keyed by where it sits.
+        """Every signature on this PSBT: where it sits, the hash type it carries, and
+        the signature itself.
 
         Read back off the signatures rather than predicted, so it says what was actually
-        produced however the signer decided to produce it.
+        produced however the signer decided to produce it. The raw bytes are returned
+        alongside the hash type because a host can pre-populate any of these slots: a
+        caller comparing only which slots are occupied would take a signature that
+        replaced planted junk for one that was already there.
         """
+        def hash_type(raw):
+            # a taproot key path signature is 64 bytes and carries no trailing byte,
+            # which is SIGHASH_DEFAULT rather than an absent hash type
+            return raw[-1] if len(raw) != 64 else SIGHASH.DEFAULT
+
         found = {}
         for i, inp in enumerate(tx.inputs):
             for key, sig in inp.partial_sigs.items():
-                found[(i, "partial", bytes(key.sec()))] = bytes(sig)[-1]
+                raw = bytes(sig)
+                found[(i, "partial", bytes(key.sec()))] = (raw[-1], raw)
             for key, sig in inp.taproot_sigs.items():
                 raw = bytes(sig)
-                found[(i, "taproot", str(key))] = raw[-1] if len(raw) == 65 else SIGHASH.DEFAULT
+                found[(i, "taproot", str(key))] = (hash_type(raw), raw)
             key_sig = getattr(inp, "taproot_key_sig", None)
             if key_sig is not None:
                 raw = bytes(key_sig)
-                found[(i, "taproot_key", b"")] = raw[-1] if len(raw) == 65 else SIGHASH.DEFAULT
+                found[(i, "taproot_key", b"")] = (hash_type(raw), raw)
             elif inp.final_scriptwitness and inp.final_scriptwitness.items:
                 raw = bytes(inp.final_scriptwitness.items[0])
-                found[(i, "witness", b"")] = raw[-1] if len(raw) == 65 else SIGHASH.DEFAULT
+                found[(i, "witness", b"")] = (hash_type(raw), raw)
         return found
 
 

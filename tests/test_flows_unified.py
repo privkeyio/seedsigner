@@ -451,7 +451,8 @@ class TestTaproot(FlowTest):
         signed = PSBT.parse(psbt.serialize())
         assert signed.sign_with(_root(), sighash=PSBTParser.sighash_type(signed)) == 1
 
-        added = {k: v for k, v in PSBTParser.signed_hash_types(signed).items() if k not in before}
+        added = {k: ht for k, (ht, raw) in PSBTParser.signed_hash_types(signed).items()
+                 if before.get(k, (None, None))[1] != raw}
         assert added, "nothing was signed, so the assertion below would be vacuous"
         assert set(added.values()) == {shown}, \
             f"screen said {hex(shown)} but signatures carry {[hex(v) for v in added.values()]}"
@@ -471,7 +472,7 @@ class TestTaproot(FlowTest):
         elif signed.inputs[0].final_scriptwitness:
             sigs.append(signed.inputs[0].final_scriptwitness.items[0])
         assert len(bytes(sigs[0])) == 64
-        assert set(PSBTParser.signed_hash_types(signed).values()) == {SIGHASH.DEFAULT}
+        assert {ht for ht, _raw in PSBTParser.signed_hash_types(signed).values()} == {SIGHASH.DEFAULT}
 
 
 class TestThePostConditionThroughTheView(FlowTest):
@@ -576,3 +577,78 @@ class TestAPsbtThatParsesAndThenRaises(FlowTest):
         assert destination.View_cls is psbt_views.PSBTUnsignableTransactionView
         assert PSBTParser.sig_count(controller.psbt) == 0, "a signature was left behind"
         assert controller.psbt.serialize() == raw, "the scanned PSBT was mutated"
+
+
+class TestAPlantedSignatureCannotMaskTheCheck(FlowTest):
+    """The post-condition is what stands between a mislabelled screen and a signed QR,
+    so it has to see the signature it is meant to check.
+
+    A host controls every field of the PSBT, including partial_sigs. Planting one under
+    the pubkey this device is about to sign with leaves the slot already occupied, and a
+    check that asked only which slots were filled would read the real signature as
+    something that was already there and never look at it. On a one input PSBT that
+    silences the check completely.
+    """
+
+    @staticmethod
+    def _psbt(declared, prefill):
+        from embit import bip32, script
+        from embit.psbt import PSBT, DerivationPath
+        from embit.transaction import Transaction, TransactionInput, TransactionOutput
+
+        root = _root()
+        path = "m/84h/1h/0h/0/0"
+        pub = root.derive(path).to_public()
+        spk = script.p2wpkh(pub)
+
+        psbt = PSBT(Transaction(
+            vin=[TransactionInput(bytes(32), 0)],
+            vout=[TransactionOutput(90000, spk)],
+        ))
+        inp = psbt.inputs[0]
+        inp.witness_utxo = TransactionOutput(100000, spk)
+        inp.bip32_derivations[pub.key] = DerivationPath(
+            root.my_fingerprint, bip32.parse_path(path))
+        inp.sighash_type = declared
+        if prefill:
+            inp.partial_sigs[pub.key] = b"\x30\x44" + b"\x00" * 68 + bytes([SIGHASH.NONE])
+        return psbt, pub
+
+    def _run_finalize(self, prefill, lie):
+        """Drive the real view, so this pins the shipped code and not a copy of it."""
+        from unittest.mock import patch
+
+        from seedsigner.controller import Controller
+
+        psbt, _pub = self._psbt(SIGHASH.UNIFIED | SIGHASH.ALL, prefill)
+        seed = _seed()
+        controller = Controller.get_instance()
+        controller.psbt = psbt
+        controller.psbt_seed = seed
+        controller.psbt_parser = PSBTParser(psbt, seed=seed, network=SettingsConstants.MAINNET)
+
+        with patch("seedsigner.views.view.View.run_screen") as run_screen:
+            run_screen.return_value = 0  # the user approves
+            if lie:
+                with patch.object(PSBTParser, "screen_sighash_type",
+                                  staticmethod(lambda *a, **k: SIGHASH.NONE)):
+                    return psbt_views.PSBTFinalizeView().run()
+            return psbt_views.PSBTFinalizeView().run()
+
+    def test_a_truthful_screen_releases_it(self):
+        assert self._run_finalize(False, lie=False).View_cls is psbt_views.PSBTSignedQRDisplayView
+
+    def test_a_planted_signature_is_refused_by_the_count_check_first(self):
+        """Not the post-condition, and worth recording so the test below is not read as
+        covering this. Success is still decided by the signature count rising, and the
+        planted signature is replaced rather than added, so the count does not move and
+        the transaction is refused before the hash types are ever compared. That check
+        predates this work; the point here is only that planting does not release a QR."""
+        assert self._run_finalize(True, lie=False).View_cls is psbt_views.PSBTSigningErrorView
+
+    @pytest.mark.parametrize("prefill", [False, True])
+    def test_a_planted_signature_does_not_silence_the_check(self, prefill):
+        """With the screen lying, the only thing that can stop the QR is the check
+        seeing the signature. Planting one in the slot must not hide it."""
+        assert self._run_finalize(prefill, lie=True).View_cls is psbt_views.PSBTUnsignableTransactionView, \
+            "a signature whose hash type differs from the screen reached the QR"
