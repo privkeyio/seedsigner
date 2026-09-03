@@ -516,3 +516,63 @@ class TestThePostConditionThroughTheView(FlowTest):
 
         assert destination.View_cls is psbt_views.PSBTUnsignableTransactionView, \
             "a signature whose hash type differs from the screen reached the QR"
+
+
+class TestAPsbtThatParsesAndThenRaises(FlowTest):
+    """The case the copy exists for, reached through the view rather than asserted about.
+
+    Input 1 keeps this seed's fingerprint but names a derivation whose key is not the
+    pubkey the PSBT gives, so embit derives, compares, and refuses. That check happens
+    while signing, not while parsing, so the transaction reviews as ordinary and fails
+    only after the user has approved it, with input 0 already signed in place.
+    """
+
+    PSBT_B64 = "cHNidP8BANgCAAAAAsTXZs3fz/dmGb6M80+jjvJZdYya+cw5bT/dGuhZFdSlAAAAAAD9////qo6xg/UZAvUkcbse1F+C9zbP/FeZNjThx7SCIn6eMCgBAAAAAP3///8EQOIBAAAAAAAWABSkZPM7kLcTRE2En1t33/0RCHgMjQXYnnYAAAAAFgAUKMaPRKXdY4m8iKrE9j+rycskJU1A4gEAAAAAABYAFPYc9wiHRrYKAZYLLztREAwpPBIwipVcAwAAAAAWABSiFuiJIa4NrxLUBVQNS0NIun6DDtoRAABPAQQ1h88DBcQGZIAAAAA+0J+jlNL3dpWwlnBi8Dx+Ipg4e6uvB3HdjzFPX7r9CAOOlAIxgII+/xCcj+XoEenKH7wj5s5wlu7Q7CCZWFLGLhA5Su0UVAAAgAEAAIAAAACAAAEA7QIAAAAEE6njX/fnvn7hbkKIRcxzNYFOSfbCdNeWnd7Fe/1UcQ0BAAAAAP3///8TqeNf9+e+fuFuQohFzHM1gU5J9sJ015ad3sV7/VRxDQMAAAAA/f///xOp41/3575+4W5CiEXMczWBTkn2wnTXlp3exXv9VHENBAAAAAD9////E6njX/fnvn7hbkKIRcxzNYFOSfbCdNeWnd7Fe/1UcQ0GAAAAAP3///8CUnheAwAAAAAWABRCfygPJ+Fjsx4BknYvvm3A3qKn2xJ/XQcAAAAAF6kU1I4TAst5nAj15ey7vwe5cM3OFq+HlhEAAAEBH1J4XgMAAAAAFgAUQn8oDyfhY7MeAZJ2L75twN6ip9sBAwQhAAAAIgYCo7sfm78RQY3B5n0ac/QF8VtMAzFnci+h5D1MtpgRY7oYOUrtFFQAAIABAACAAAAAgAEAAAAGAAAAAAEAcQIAAAABxY7wh0nsfJQfzWrD/9rN9BYsM+iOmPaO6I0ANFgO/PcAAAAAAP3///8CptiUAAAAAAAWABRIm4HhQY/TzOjeWSPRrbuJo9MlW826oHYAAAAAFgAU0z+0L2QSLGtyQTn8FhbCpcI7jbliAQAAAQEfzbqgdgAAAAAWABTTP7QvZBIsa3JBOfwWFsKlwjuNuQEDBCEAAAAiBgITHmebEANk81CraV4xZIpqkNjjw0tIvezl1Ism1NRH3Rg5Su0UVAAAgAEAAIAAAACAAAAAAGMAAAAAIgICuTT7WnuiUTpObjWnZFHzIeEvW9PTB+1LLVFNQJVFeIIYOUrtFFQAAIABAACAAAAAgAEAAAAHAAAAACICAk8f3hpc5C35chgSg+Pe2zZ9IhHREd4aKW2+yAMRIFeqGDlK7RRUAACAAQAAgAAAAIABAAAACQAAAAAAIgIDjt1CjvrnMMnjbmTNKUAYoKEDRbmKjNjbq+6Ppqj3bqQYOUrtFFQAAIABAACAAAAAgAEAAAAIAAAAAA=="
+
+    def _load(self):
+        from base64 import b64decode
+
+        from embit.psbt import PSBT
+
+        from seedsigner.controller import Controller
+
+        seed = _seed()
+        controller = Controller.get_instance()
+        controller.psbt = PSBT.parse(b64decode(self.PSBT_B64))
+        controller.psbt_seed = seed
+        controller.psbt_parser = PSBTParser(controller.psbt, seed=seed,
+                                            network=SettingsConstants.MAINNET)
+        return controller
+
+    def test_it_reviews_like_any_other_transaction(self):
+        """If it failed at parse time the rest of this class would be vacuous."""
+        controller = self._load()
+        assert controller.psbt_parser.num_inputs == 2
+
+    def test_signing_it_raises_after_one_input_is_already_signed(self):
+        from base64 import b64decode
+
+        from embit.psbt import PSBT, PSBTError
+
+        raw = b64decode(self.PSBT_B64)
+        held = PSBT.parse(raw)
+        with pytest.raises(PSBTError, match="Derivation path"):
+            held.sign_with(_root(), sighash=PSBTParser.sighash_type(held))
+
+        assert PSBTParser.sig_count(held) == 1
+        assert held.serialize() != raw
+
+    def test_the_view_refuses_and_leaves_the_scanned_psbt_alone(self):
+        from base64 import b64decode
+        from unittest.mock import patch
+
+        controller = self._load()
+        raw = b64decode(self.PSBT_B64)
+
+        with patch("seedsigner.views.view.View.run_screen") as run_screen:
+            run_screen.return_value = 0  # the user approves
+            destination = psbt_views.PSBTFinalizeView().run()
+
+        assert destination.View_cls is psbt_views.PSBTUnsignableTransactionView
+        assert PSBTParser.sig_count(controller.psbt) == 0, "a signature was left behind"
+        assert controller.psbt.serialize() == raw, "the scanned PSBT was mutated"
