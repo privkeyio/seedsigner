@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: seedsigner 0.8.7\n"
 "Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
-"POT-Creation-Date: 2026-03-05 22:02+0000\n"
+"POT-Creation-Date: 2026-09-03 11:57-0400\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -173,6 +173,14 @@ msgstr ""
 
 #: src/seedsigner/gui/screens/psbt_screens.py
 msgid "Click to approve this transaction"
+msgstr ""
+
+#: src/seedsigner/gui/screens/psbt_screens.py
+msgid "Unified sighash"
+msgstr ""
+
+#: src/seedsigner/gui/screens/psbt_screens.py
+msgid "Legacy sighash"
 msgstr ""
 
 #: src/seedsigner/gui/screens/scan_screens.py
@@ -471,6 +479,11 @@ msgstr ""
 
 #: src/seedsigner/gui/screens/settings_screens.py
 #: src/seedsigner/views/settings_views.py
+msgid "Version"
+msgstr ""
+
+#: src/seedsigner/gui/screens/settings_screens.py
+#: src/seedsigner/views/settings_views.py
 msgid "Settings QR"
 msgstr ""
 
@@ -482,8 +495,18 @@ msgstr ""
 msgid "Home"
 msgstr ""
 
+#. Counts frames collected so far vs the total required (e.g. 12/50)
+#: src/seedsigner/gui/screens/tools_screens.py
+msgid "{}/{}"
+msgstr ""
+
 #: src/seedsigner/gui/screens/tools_screens.py
 msgid "click a button"
+msgstr ""
+
+#. Shown while the camera gathers the image frames a new seed requires
+#: src/seedsigner/gui/screens/tools_screens.py
+msgid "Collecting entropy frames"
 msgstr ""
 
 #. A prompt to the user to either accept or reshoot the image
@@ -940,11 +963,31 @@ msgid "Approve transaction"
 msgstr ""
 
 #: src/seedsigner/views/psbt_views.py
-msgid "Select different seed"
+msgid "Transaction Error"
 msgstr ""
 
 #: src/seedsigner/views/psbt_views.py
-msgid "Transaction Error"
+msgid "Cannot Sign"
+msgstr ""
+
+#: src/seedsigner/views/psbt_views.py
+msgid ""
+"This transaction could not be signed. Nothing was signed and nothing was "
+"sent."
+msgstr ""
+
+#: src/seedsigner/views/psbt_views.py src/seedsigner/views/seed_views.py
+msgid "Done"
+msgstr ""
+
+#: src/seedsigner/views/psbt_views.py
+msgid ""
+"This transaction asks for a signature type this device does not sign. "
+"Signing it would only sign part of it."
+msgstr ""
+
+#: src/seedsigner/views/psbt_views.py
+msgid "Select different seed"
 msgstr ""
 
 #: src/seedsigner/views/psbt_views.py
@@ -1075,10 +1118,6 @@ msgstr ""
 
 #: src/seedsigner/views/seed_views.py
 msgid "Checksum failure; not a valid seed phrase."
-msgstr ""
-
-#: src/seedsigner/views/seed_views.py
-msgid "Done"
 msgstr ""
 
 #: src/seedsigner/views/seed_views.py
@@ -1405,6 +1444,14 @@ msgstr ""
 
 #: src/seedsigner/views/tools_views.py src/seedsigner/views/view.py
 msgid "Tools"
+msgstr ""
+
+#. Shown when the camera fails to collect enough frames for a new seed.
+#. "expected" and "actual" are the number of frames.
+#: src/seedsigner/views/tools_views.py
+msgid ""
+"Entropy collection failed. Expected {expected} preview frames, got "
+"{actual}"
 msgstr ""
 
 #: src/seedsigner/views/tools_views.py

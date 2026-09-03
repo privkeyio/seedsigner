@@ -533,35 +533,20 @@ class PSBTFinalizeView(View):
             # Should not be able to get here
             return Destination(MainMenuView)
 
-        # Resolved once, here, and used for the refusal, the display and the signing
-        # call below. Recomputing it at each of those would let them disagree, and the
-        # whole point of the display is that it names what is about to be signed.
-        requested_sighash = PSBTParser.sighash_type(psbt)
-
-        # Checked before the approval screen rather than after it: signing these would
-        # produce a transaction signed less completely than this device reports, and the
-        # user should not be asked to approve something that will not be signed. Scoped
-        # to this seed's own inputs; a co-signer finishes the rest.
-        if PSBTParser.unsignable_inputs(psbt, seed=self.controller.psbt_seed, network=self.settings.get_value(SettingsConstants.SETTING__NETWORK)):
-            return Destination(PSBTUnsignableSighashView)
-
-        # What each input will actually be signed with, which is not the value asked
-        # for: an input declaring nothing takes the request, and DEFAULT means ALL off
-        # taproot. Where they do not all reduce to one type there is no honest single
-        # thing to put on the screen, so the transaction is refused rather than
-        # described by a type none of its signatures will carry.
-        effective = {
-            PSBTParser.effective_sighash_type(inp, requested_sighash)
-            for inp in psbt.inputs
-            if PSBTParser._input_is_ours(inp, self.controller.psbt_seed, self.settings.get_value(SettingsConstants.SETTING__NETWORK))
-        }
-        if len(effective) > 1:
+        # One decision, made in PSBTParser so this view and the tests cannot describe
+        # different behaviour. None means there is nothing honest to put on the screen:
+        # an input this seed holds would be skipped, leaving the transaction signed in
+        # part, or the inputs do not reduce to a single type.
+        shown_sighash = PSBTParser.screen_sighash_type(
+            psbt, psbt_parser.seed, psbt_parser.network
+        )
+        if shown_sighash is None:
             return Destination(PSBTUnsignableSighashView)
 
         selected_menu_num = self.run_screen(
             PSBTFinalizeScreen,
             button_data=[self.APPROVE_PSBT],
-            sighash_type=effective.pop() if effective else requested_sighash,
+            sighash_type=shown_sighash,
         )
 
         if selected_menu_num == RET_CODE__BACK_BUTTON:
@@ -582,11 +567,29 @@ class PSBTFinalizeView(View):
                 # signer's default. The unified opt-in selects a signature hash
                 # algorithm, so which one gets used is worth stating here rather
                 # than inheriting from whichever embit happens to be installed.
-                signing_psbt.sign_with(psbt_parser.root, sighash=requested_sighash)
+                before = PSBTParser.signed_hash_types(psbt)
+                signing_psbt.sign_with(psbt_parser.root, sighash=PSBTParser.sighash_type(psbt))
             except Exception as e:
                 # Any failure here is a property of the PSBT, which is untrusted input,
                 # rather than of the seed. Logged so a genuine defect is still visible.
                 logger.exception("signing raised on a PSBT the user had approved: %s", e)
+                return Destination(PSBTUnsignableTransactionView)
+
+            # The screen made a claim; this is where it is held to it. sign_with also
+            # signs inputs it matches by finding the root key inside a script, with no
+            # derivation to predict from, so what was produced is read back off the
+            # signatures rather than worked out in advance. Nothing reaches the QR unless
+            # every signature this call added carries the byte the user was shown.
+            added = {
+                where: hash_type
+                for where, hash_type in PSBTParser.signed_hash_types(signing_psbt).items()
+                if where not in before
+            }
+            if set(added.values()) - {shown_sighash}:
+                logger.error(
+                    "signed hash types %s do not match the %s shown to the user",
+                    sorted(set(added.values())), hex(shown_sighash),
+                )
                 return Destination(PSBTUnsignableTransactionView)
 
             trimmed_psbt = PSBTParser.trim(signing_psbt)

@@ -277,7 +277,7 @@ class PSBTParser():
     })
 
     @staticmethod
-    def _derivation_matches_seed(public_key, derivation_path_obj, seed, network):
+    def _derivation_matches_seed(public_key, derivation_path_obj, seed, network, fingerprint=None):
         """Whether one derivation on an input or output belongs to the given seed.
 
         A coordinator given only an xpub omits the fingerprint, which arrives as four
@@ -285,7 +285,9 @@ class PSBTParser():
         this seed's. The fallback derives the key the PSBT names and compares it, which
         is what PSBTParser does elsewhere before parsing.
         """
-        if hexlify(derivation_path_obj.fingerprint).decode() == seed.get_fingerprint(network):
+        if fingerprint is None:
+            fingerprint = seed.get_fingerprint(network)
+        if hexlify(derivation_path_obj.fingerprint).decode() == fingerprint:
             return True
 
         if derivation_path_obj.fingerprint == b"\x00\x00\x00\x00":
@@ -301,13 +303,13 @@ class PSBTParser():
 
 
     @staticmethod
-    def _input_is_ours(inp, seed, network):
+    def _input_is_ours(inp, seed, network, fingerprint=None):
         """Whether any derivation on this input belongs to the given seed."""
         derivations = list(inp.bip32_derivations.items()) + [
             (pub, derivation) for pub, (_leaves, derivation) in inp.taproot_bip32_derivations.items()
         ]
         return any(
-            PSBTParser._derivation_matches_seed(pub, derivation, seed, network)
+            PSBTParser._derivation_matches_seed(pub, derivation, seed, network, fingerprint)
             for pub, derivation in derivations
         )
 
@@ -325,12 +327,8 @@ class PSBTParser():
         commonest PSBTs, and a screen that names a type no signature carries is worse
         than one that says nothing.
         """
-        from embit.psbt import sighash_types_agree
-
         declared = inp.sighash_type
         effective = requested if declared is None else declared
-        if effective is None:
-            effective = SIGHASH.DEFAULT
         if not inp.is_taproot and effective == SIGHASH.DEFAULT:
             effective = SIGHASH.ALL
         # Kept so this stays a faithful mirror of sign_with rather than a shortcut that
@@ -349,7 +347,7 @@ class PSBTParser():
 
 
     @staticmethod
-    def unsignable_inputs(tx, seed=None, network=SettingsConstants.MAINNET):
+    def unsignable_inputs(tx, seed=None, network=SettingsConstants.MAINNET, fingerprint=None):
         """Inputs belonging to this seed that the signer will skip because the hash type
         they declare is not the one this device is about to ask for.
 
@@ -371,8 +369,61 @@ class PSBTParser():
             i for i, inp in enumerate(tx.inputs)
             if inp.sighash_type is not None
             and not sighash_types_agree(inp.sighash_type, requested)
-            and (seed is None or PSBTParser._input_is_ours(inp, seed, network))
+            and (seed is None or PSBTParser._input_is_ours(inp, seed, network, fingerprint))
         ]
+
+
+    @staticmethod
+    def screen_sighash_type(tx, seed, network=SettingsConstants.MAINNET):
+        """The one hash type to name on the approval screen, or None to refuse.
+
+        One place, so the view and the tests cannot describe different behaviour. None
+        means there is nothing honest to display: either an input this seed holds would
+        be skipped, leaving the transaction signed in part, or the inputs do not reduce
+        to a single type, so any one value on the screen would misdescribe some input.
+
+        Inputs this seed holds decide it where there are any. Where there are none the
+        whole transaction does, because sign_with also matches the root key inside a
+        script with no derivation present, and those inputs still get signed.
+        """
+        requested = PSBTParser.sighash_type(tx)
+        fingerprint = seed.get_fingerprint(network)
+
+        if PSBTParser.unsignable_inputs(tx, seed=seed, network=network, fingerprint=fingerprint):
+            return None
+
+        ours = [
+            inp for inp in tx.inputs
+            if PSBTParser._input_is_ours(inp, seed, network, fingerprint)
+        ]
+        effective = {
+            PSBTParser.effective_sighash_type(inp, requested) for inp in (ours or tx.inputs)
+        }
+        return effective.pop() if len(effective) == 1 else None
+
+
+    @staticmethod
+    def signed_hash_types(tx):
+        """The hash type byte carried by each signature, keyed by where it sits.
+
+        Read back off the signatures rather than predicted, so it says what was actually
+        produced however the signer decided to produce it.
+        """
+        found = {}
+        for i, inp in enumerate(tx.inputs):
+            for key, sig in inp.partial_sigs.items():
+                found[(i, "partial", bytes(key.sec()))] = bytes(sig)[-1]
+            for key, sig in inp.taproot_sigs.items():
+                raw = bytes(sig)
+                found[(i, "taproot", str(key))] = raw[-1] if len(raw) == 65 else SIGHASH.DEFAULT
+            key_sig = getattr(inp, "taproot_key_sig", None)
+            if key_sig is not None:
+                raw = bytes(key_sig)
+                found[(i, "taproot_key", b"")] = raw[-1] if len(raw) == 65 else SIGHASH.DEFAULT
+            elif inp.final_scriptwitness and inp.final_scriptwitness.items:
+                raw = bytes(inp.final_scriptwitness.items[0])
+                found[(i, "witness", b"")] = raw[-1] if len(raw) == 65 else SIGHASH.DEFAULT
+        return found
 
 
     @staticmethod
