@@ -726,3 +726,102 @@ class TestWhatTheDeviceRefusesToDescribe(FlowTest):
 
         found = PSBTParser.signed_hash_types(psbt)
         assert list(found.values())[0][0] is None, "an empty value has no hash type"
+
+
+class TestMultisig(FlowTest):
+    """Every other fixture here is single-sig, so the scoping to this seed's own inputs
+    is never exercised where it earns its keep: a multisig input carries a co-signer's
+    key as well as ours, and their signature sits in partial_sigs under a foreign
+    pubkey."""
+
+    NETWORK = SettingsConstants.MAINNET
+    UNIFIED_ALL = SIGHASH.UNIFIED | SIGHASH.ALL
+
+    @staticmethod
+    def _psbt(declared):
+        from binascii import a2b_base64
+
+        from embit.psbt import PSBT
+
+        from psbt_testing_util import PSBTTestData, create_output
+
+        psbt = PSBT.parse(a2b_base64(PSBTTestData.MULTISIG_NATIVE_SEGWIT_1_INPUT))
+        psbt.outputs.append(create_output(PSBTTestData.SINGLE_SIG_NATIVE_SEGWIT_RECEIVE, 100_000))
+        for inp in psbt.inputs:
+            inp.sighash_type = declared
+        return psbt
+
+    @staticmethod
+    def _key(seed):
+        from embit import bip32
+
+        return bip32.HDKey.from_seed(seed.seed_bytes)
+
+    def test_our_share_of_a_multisig_input_is_recognised(self):
+        from psbt_testing_util import PSBTTestData
+
+        psbt = self._psbt(self.UNIFIED_ALL)
+        assert PSBTParser._input_is_ours(psbt.inputs[0], PSBTTestData.seed, self.NETWORK)
+
+        shown, reason = PSBTParser.screen_sighash_type(psbt, PSBTTestData.seed, self.NETWORK)
+        assert reason is None
+        assert shown == self.UNIFIED_ALL
+
+    def test_a_cosigners_signature_is_not_mistaken_for_ours(self):
+        """The post-condition only speaks for signatures this device added. A co-signer
+        who signed first must not be pulled into that set, or every multisig round after
+        the first would be refused."""
+        from embit.psbt import PSBT
+
+        from psbt_testing_util import PSBTTestData
+
+        psbt = self._psbt(self.UNIFIED_ALL)
+        psbt.sign_with(self._key(PSBTTestData.multisig_key_2), sighash=self.UNIFIED_ALL)
+        assert PSBTParser.sig_count(psbt) == 1, "the co-signer's round did not happen"
+
+        shown, reason = PSBTParser.screen_sighash_type(psbt, PSBTTestData.seed, self.NETWORK)
+        assert reason is None
+
+        before = PSBTParser.signed_hash_types(psbt)
+        signed = PSBT.parse(psbt.serialize())
+        signed.sign_with(self._key(PSBTTestData.seed), sighash=PSBTParser.sighash_type(signed))
+
+        added = {k: ht for k, (ht, raw) in PSBTParser.signed_hash_types(signed).items()
+                 if before.get(k, (None, None))[1] != raw}
+        assert len(added) == 1, "the co-signer's signature was counted as one of ours"
+        assert set(added.values()) == {shown}
+
+    def test_the_declared_type_reaches_the_co_signer(self):
+        """Why trim carries the field. The device signs, trims, and the coordinator
+        merges that back into the transaction it still holds before the next signer
+        sees it. Without the field the next signer is told nothing and signs the
+        standard message, so the two signatures cover different messages."""
+        from embit.psbt import PSBT
+
+        from psbt_testing_util import PSBTTestData
+
+        def round_trip(carry):
+            device = self._psbt(self.UNIFIED_ALL)
+            device.sign_with(self._key(PSBTTestData.seed), sighash=self.UNIFIED_ALL)
+            trimmed = PSBT.parse(PSBTParser.trim(device).serialize())
+            if not carry:
+                for inp in trimmed.inputs:
+                    inp.sighash_type = None
+
+            coordinator = self._psbt(None)
+            for i, inp in enumerate(trimmed.inputs):
+                coordinator.inputs[i].partial_sigs.update(inp.partial_sigs)
+                coordinator.inputs[i].sighash_type = inp.sighash_type
+
+            declared = coordinator.inputs[0].sighash_type
+            coordinator.sign_with(
+                self._key(PSBTTestData.multisig_key_2),
+                sighash=declared if declared is not None else SIGHASH.DEFAULT,
+            )
+            return {bytes(sig)[-1] for inp in coordinator.inputs
+                    for sig in inp.partial_sigs.values()}
+
+        assert round_trip(carry=True) == {self.UNIFIED_ALL}, \
+            "both signatures should cover the unified message"
+        assert round_trip(carry=False) == {self.UNIFIED_ALL, SIGHASH.ALL}, \
+            "without the field the co-signer signs a different message, which is the point"
