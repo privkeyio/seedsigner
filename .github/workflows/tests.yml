@@ -53,11 +53,14 @@ jobs:
         run: |
           sudo apt-get install libzbar0
           python -m pip install --upgrade pip
-          pip install -r requirements.txt -r tests/requirements.txt
-          # Installed separately: this file is hash pinned because the image build installs it with
-          # --require-hashes, and pip turns that mode on for every requirement in the same command,
-          # which the git pin in requirements.txt cannot satisfy.
+          # Everything from PyPI, with its transitive dependencies, verified by hash.
+          pip install --require-hashes -r tests/requirements-ci.txt
           pip install --require-hashes -r l10n/requirements-l10n.txt
+          # pip turns --require-hashes on for every requirement in the same command, and a
+          # git SHA pin cannot carry a hash, so the two git dependencies install on their
+          # own. The SHA is itself immutable, and neither declares a runtime dependency,
+          # so --no-deps leaves nothing floating.
+          grep '@ git+' requirements.txt | xargs -r -d '\n' pip install --no-deps
           pip install -e .
       - name: Compile translations
         run: python setup.py compile_catalog
