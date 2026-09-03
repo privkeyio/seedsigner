@@ -1,3 +1,20 @@
+# SeedSigner, with the unified opt-in signature hash
+
+An unofficial fork of [SeedSigner](https://github.com/SeedSigner/seedsigner) that signs with the unified opt-in signature hash defined by the Bitcoin hardfork, as Bitcoin Knots `v29.4.1.knots20260508` specifies it in [doc/unified-sighash.md](https://github.com/bitcoinknots/bitcoin/blob/v29.4.1.knots20260508/doc/unified-sighash.md). It is not affiliated with the SeedSigner project. Upstream SeedSigner has not adopted the fork, so use it instead if that is what you want.
+
+> **Not audited. Use at your own risk, and no warranty of any kind, see the [MIT license](LICENSE.md).** Everything below the divider is upstream's documentation and describes SeedSigner rather than this fork.
+
+## What differs from SeedSigner
+
+- **Signs the unified message when the transaction asks for it.** A PSBT declaring hash type `0x21` is signed with the fork's message; one declaring nothing is signed the standard way, exactly as before.
+- **The signature hash type is on the approval screen.** `Unified sighash (0x21)` or `Standard sighash (0x01)`, so a host that quietly rewrites the request cannot do it without you seeing. What it names is checked against every signature the device makes before anything leaves it.
+- **A transaction it can only sign part of is refused**, rather than signed in part and reported as complete.
+- **[embit](https://github.com/privkeyio/embit) is pinned to a fork** carrying the algorithm, by commit and by tarball hash, because the stock library signs the standard way and reports nothing unusual while doing it.
+
+This carries no activation height and decides no consensus rules. It is the signature message only: the wallet that builds the PSBT decides which one to ask for.
+
+---------------
+
 # Build an offline, airgapped Bitcoin signing device for less than $50!
 
 ![Image of SeedSigners in Mini Pill Enclosures](docs/img/Mini_Pill_Main_Photo.jpg)
