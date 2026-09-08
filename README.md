@@ -1,3 +1,25 @@
+# SeedSigner + Satochip, with the unified opt-in signature hash
+
+The [smartcard fork](https://github.com/3rdIteration/seedsigner) of SeedSigner, signing with the unified opt-in signature hash defined by the Bitcoin hardfork, as Bitcoin Knots `v29.4.1.knots20260508` specifies it in [doc/unified-sighash.md](https://github.com/bitcoinknots/bitcoin/blob/v29.4.1.knots20260508/doc/unified-sighash.md). Unofficial, and affiliated with neither project.
+
+> **Not audited, and not run on smartcard hardware.** The card path is covered against a simulated card, ending at a Bitcoin Knots regtest node that accepts and mines the result; no signature from a real Satochip or Keycard has been checked. Use at your own risk, and no warranty of any kind, see the [MIT license](LICENSE.md). Everything below the divider is the fork's own documentation.
+
+## What this branch adds
+
+- **Signs the unified message when the transaction asks for it**, from a seed and from a card alike. A PSBT declaring hash type `0x21` is signed with the hardfork's message; one declaring nothing is signed the standard way, exactly as before.
+- **The signature hash type is on the approval screen.** `Unified sighash (0x21)` or `Standard sighash (0x01)`, so a host that quietly rewrites the request cannot do it without you seeing. For seed signing, what the screen names is checked against every signature the device makes before anything leaves it.
+
+  <img src="docs/img/sighash-unified.png" width="200" alt="The approval screen reading Unified sighash (0x21)"> <img src="docs/img/sighash-standard.png" width="200" alt="The approval screen reading Standard sighash (0x01)">
+
+- **A transaction it can only sign part of is refused**, rather than signed in part and reported as complete.
+- **[embit](https://github.com/privkeyio/embit) is pinned to a fork** carrying the algorithm, by commit, because the stock library signs the standard way and reports nothing unusual while doing it.
+
+A Satochip or Keycard is handed 32 bytes and signs them blind, so nothing on the card decides which message it just committed to. The type is chosen on the SeedSigner, used to build the digest, and appended to the signature there. That is what makes the opt-in reachable from a card at all, and it is why the approval screen is the thing to read.
+
+This carries no activation height and decides no consensus rules. It is the signature message only: the wallet that builds the PSBT decides which one to ask for.
+
+---------------
+
 # SeedSigner + Satochip
 The question of how to store your private keys in a way that is both secure and resistant to loss or damage is a challenge.
 

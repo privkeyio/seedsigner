@@ -9,6 +9,8 @@ from embit.ec import PublicKey
 from embit.networks import NETWORKS
 from embit.psbt import PSBT, DerivationPath
 from embit.descriptor import Descriptor
+from embit.script import Witness
+from embit.transaction import SIGHASH
 
 from seedsigner.models.psbt_parser import InvalidPSBTError, PSBTParser, RejectCode
 
@@ -1267,3 +1269,214 @@ class TestPSBTParserSeedOwnership:
 
         with raises_reject(RejectCode.SEED_CANNOT_SIGN):
             self._parse(psbt)
+
+
+class TestTrimCarriesTheDeclaredType:
+    """A signature carries its own hash type in its last byte, so a lone signer does
+    not need the declared field. A co-signer reading the trimmed PSBT does: without it
+    the next signer is not told the opt-in was asked for."""
+
+    @staticmethod
+    def _psbt(declared):
+        from embit.psbt import PSBT
+        from embit.transaction import Transaction, TransactionInput, TransactionOutput
+        from embit import script
+        from embit.bip32 import HDKey
+
+        spk = script.p2wpkh(HDKey.from_string(
+            "tprv8ZgxMBicQKsPd9TeAdPADNnSyH9SSUUbTVeFszDE23Ki6TBB5nCefAdHkK8Fm3qMQR6sHwA5"
+            "6zqRmKmxnHk37JkiFzvncDqoKmPWubu7hDF"
+        ).derive("m/84h/1h/0h/0/0").to_public())
+        vin = [TransactionInput(bytes(31) + bytes([i + 1]), 0) for i in range(len(declared))]
+        psbt = PSBT(Transaction(vin=vin, vout=[TransactionOutput(90000, spk)]))
+        for i, sh in enumerate(declared):
+            psbt.inputs[i].witness_utxo = TransactionOutput(100000, spk)
+            psbt.inputs[i].sighash_type = sh
+        return psbt
+
+    @pytest.mark.parametrize("declared", [
+        [SIGHASH.UNIFIED | SIGHASH.ALL],
+        [SIGHASH.ALL],
+        [None],
+        [SIGHASH.UNIFIED | SIGHASH.ALL, SIGHASH.UNIFIED | SIGHASH.ALL],
+    ])
+    def test_the_declared_type_survives_trimming(self, declared):
+        trimmed = PSBTParser.trim(self._psbt(declared))
+        assert [inp.sighash_type for inp in trimmed.inputs] == declared
+
+    def test_a_finalized_input_is_left_alone(self):
+        """BIP-174 has a finalizer strip everything but the final fields. A taproot key
+        path spend is finalized by the time trim runs and its witness already carries
+        the hash type, so the declared field is not re-emitted there."""
+        psbt = self._psbt([SIGHASH.UNIFIED | SIGHASH.ALL])
+        psbt.inputs[0].final_scriptwitness = Witness([bytes(64)])
+
+        trimmed = PSBTParser.trim(psbt)
+        assert trimmed.inputs[0].final_scriptwitness is not None
+        assert trimmed.inputs[0].sighash_type is None
+
+    def test_it_survives_serialization(self):
+        """The trimmed PSBT is what leaves the device, so the field has to be on the
+        wire, not just on the object."""
+        from embit.psbt import PSBT
+
+        declared = SIGHASH.UNIFIED | SIGHASH.ALL
+        trimmed = PSBTParser.trim(self._psbt([declared]))
+        reparsed = PSBT.parse(trimmed.serialize())
+        assert reparsed.inputs[0].sighash_type == declared
+
+
+class TestSighashType:
+    """PSBTParser.sighash_type decides what sign_with is asked for, from a value the
+    host supplies. Nothing on this device shows the hash type to the user, so a
+    transaction asking for one that does not commit to the outputs reviews as an
+    ordinary send. These pin which types this device will sign at all.
+    """
+    from embit.transaction import SIGHASH
+
+    UNIFIED_ALL = SIGHASH.UNIFIED | SIGHASH.ALL
+
+    @staticmethod
+    def _psbt(sighash_types):
+        from embit.psbt import PSBT
+        from embit.transaction import Transaction, TransactionInput, TransactionOutput
+        from embit import script
+        from embit.bip32 import HDKey
+
+        spk = script.p2wpkh(HDKey.from_string(
+            "tprv8ZgxMBicQKsPd9TeAdPADNnSyH9SSUUbTVeFszDE23Ki6TBB5nCefAdHkK8Fm3qMQR6sHwA56zqRmKmxnHk37JkiFzvncDqoKmPWubu7hDF"
+        ).derive("m/84h/1h/0h/0/0").to_public())
+        vin = [TransactionInput(bytes(32)[:31] + bytes([i + 1]), 0) for i in range(len(sighash_types))]
+        psbt = PSBT(Transaction(vin=vin, vout=[TransactionOutput(90000, spk)]))
+        for i, sh in enumerate(sighash_types):
+            psbt.inputs[i].witness_utxo = TransactionOutput(100000, spk)
+            psbt.inputs[i].sighash_type = sh
+        return psbt
+
+    @pytest.mark.parametrize("declared", [
+        [None, None],
+        [SIGHASH.ALL, SIGHASH.ALL],
+        [SIGHASH.DEFAULT, SIGHASH.DEFAULT],
+        [UNIFIED_ALL, UNIFIED_ALL],
+    ])
+    def test_signable_types_are_passed_through(self, declared):
+        """A type this device signs is handed to sign_with as the PSBT asked."""
+        expected = declared[0] or self.SIGHASH.DEFAULT
+        assert PSBTParser.sighash_type(self._psbt(declared)) == expected
+
+    @pytest.mark.parametrize("declared, why", [
+        ([SIGHASH.NONE, SIGHASH.NONE], "commits to no outputs, so anyone can redirect the spend"),
+        ([SIGHASH.SINGLE, SIGHASH.SINGLE], "an input with no output at its index commits to nothing"),
+        ([0x81, 0x81], "ANYONECANPAY leaves the other inputs uncommitted"),
+        ([0x82, 0x82], "ANYONECANPAY | NONE"),
+        ([SIGHASH.UNIFIED | SIGHASH.NONE] * 2, "the opt-in does not make NONE safe"),
+        ([0x05, 0x05], "not a defined type"),
+    ])
+    def test_dangerous_types_fall_back_to_default(self, declared, why):
+        """Falling back to DEFAULT makes sign_with skip these inputs, which is what
+        happened before any hash type was passed at all."""
+        assert PSBTParser.sighash_type(self._psbt(declared)) == self.SIGHASH.DEFAULT, why
+
+    def test_disagreeing_inputs_fall_back_to_default(self):
+        """One input asking for NONE must not get its own signature just because it asked."""
+        assert PSBTParser.sighash_type(self._psbt([self.SIGHASH.ALL, self.SIGHASH.NONE])) == self.SIGHASH.DEFAULT
+        assert PSBTParser.sighash_type(self._psbt([self.UNIFIED_ALL, self.SIGHASH.NONE])) == self.SIGHASH.DEFAULT
+
+    def test_differing_signable_types_still_fall_back(self):
+        """Two types that are each signable are still a disagreement. Without the length
+        check this returned whichever the set happened to pop, and only an accidental
+        KeyError on an empty PSBT caught that.
+        """
+        assert PSBTParser.sighash_type(self._psbt([self.SIGHASH.ALL, self.UNIFIED_ALL])) == self.SIGHASH.DEFAULT
+        assert PSBTParser.sighash_type(self._psbt([None, self.SIGHASH.ALL])) == self.SIGHASH.DEFAULT
+
+    def test_dangerous_types_produce_no_signature(self):
+        """The property that actually matters, asserted through sign_with rather than on the
+        value handed to it. What makes a SIGHASH_NONE PSBT unsignable is this helper and
+        embit's own per input check together, and embit is pinned by git SHA to a fork. If
+        that pin moves and the fork widens its check, every assertion above still passes
+        while the device signs SIGHASH_NONE again. This one does not.
+        """
+        from embit.bip32 import HDKey
+        from embit.psbt import DerivationPath
+
+        root = HDKey.from_string(
+            "tprv8ZgxMBicQKsPd9TeAdPADNnSyH9SSUUbTVeFszDE23Ki6TBB5nCefAdHkK8Fm3qMQR6sHwA56zqRmKmxnHk37JkiFzvncDqoKmPWubu7hDF")
+        pub = root.derive("m/84h/1h/0h/0/0").to_public()
+
+        for declared in ([self.SIGHASH.NONE] * 2, [self.SIGHASH.SINGLE] * 2, [0x81, 0x81],
+                         [0x82, 0x82], [self.SIGHASH.UNIFIED | self.SIGHASH.NONE] * 2,
+                         [0x05, 0x05], [0x1234, 0x1234]):
+            psbt = self._psbt(declared)
+            for inp in psbt.inputs:
+                inp.bip32_derivations[pub.key] = DerivationPath(
+                    root.my_fingerprint, [84 + 2**31, 1 + 2**31, 2**31, 0, 0])
+            assert psbt.sign_with(root, sighash=PSBTParser.sighash_type(psbt)) == 0, \
+                f"{[hex(d) for d in declared]} must not produce a signature"
+
+    def test_the_opt_in_still_signs(self):
+        """The counterpart: the flow this fork exists for must still work end to end."""
+        from embit.bip32 import HDKey
+        from embit.psbt import DerivationPath
+
+        root = HDKey.from_string(
+            "tprv8ZgxMBicQKsPd9TeAdPADNnSyH9SSUUbTVeFszDE23Ki6TBB5nCefAdHkK8Fm3qMQR6sHwA56zqRmKmxnHk37JkiFzvncDqoKmPWubu7hDF")
+        pub = root.derive("m/84h/1h/0h/0/0").to_public()
+
+        psbt = self._psbt([self.UNIFIED_ALL, self.UNIFIED_ALL])
+        for inp in psbt.inputs:
+            inp.bip32_derivations[pub.key] = DerivationPath(
+                root.my_fingerprint, [84 + 2**31, 1 + 2**31, 2**31, 0, 0])
+        assert psbt.sign_with(root, sighash=PSBTParser.sighash_type(psbt)) == 2
+        for inp in psbt.inputs:
+            for sig in inp.partial_sigs.values():
+                assert bytes(sig)[-1] == self.UNIFIED_ALL
+
+    def test_the_fallback_must_be_default_not_all(self):
+        """The fallback cannot be SIGHASH.ALL, which is the obvious-looking change.
+
+        Under DEFAULT, sign_with leaves an input's own opt-in bit alone. Under ALL it
+        strips it, and a PSBT declaring 0x20 then emits a signature whose hash type byte
+        is 0x00, which no verifier accepts. DEFAULT is load bearing, not incidental.
+        """
+        assert PSBTParser.sighash_type(self._psbt([self.SIGHASH.NONE] * 2)) == self.SIGHASH.DEFAULT
+        assert PSBTParser.sighash_type(self._psbt([self.SIGHASH.NONE] * 2)) != self.SIGHASH.ALL
+
+    def test_never_returns_none(self):
+        """sign_with(sighash=None) signs every input with whatever it declares, which is
+        how the SIGHASH_NONE input got signed in the first place."""
+        for declared in ([None, None], [self.SIGHASH.NONE] * 2, [self.SIGHASH.ALL, self.SIGHASH.NONE], []):
+            assert PSBTParser.sighash_type(self._psbt(declared)) is not None
+
+
+class TestTheLoadTimeSighashAllowlist:
+    """What PSBTParser lets through before the user sees anything.
+
+    This fork refuses at load anything other than a hash type that commits to the whole
+    transaction, which is what makes the review screens mean what they say. The unified
+    opt-in commits to exactly what SIGHASH_ALL does, so it belongs on that list; the
+    types that hand authority to the coordinator still do not.
+    """
+    seed = PSBTTestData.seed
+
+    def _psbt(self, declared):
+        psbt = PSBT.parse(a2b_base64(PSBTTestData.SINGLE_SIG_NATIVE_SEGWIT_1_INPUT))
+        psbt.outputs.append(create_output(PSBTTestData.SINGLE_SIG_NATIVE_SEGWIT_CHANGE, 10_000))
+        for inp in psbt.inputs:
+            inp.sighash_type = declared
+        return PSBTParser(psbt, self.seed, network=SettingsConstants.REGTEST)
+
+    @pytest.mark.parametrize("declared", [None, SIGHASH.ALL, SIGHASH.UNIFIED | SIGHASH.ALL])
+    def test_a_type_that_commits_to_everything_is_admitted(self, declared):
+        assert self._psbt(declared).num_inputs == 1
+
+    @pytest.mark.parametrize("declared", [
+        SIGHASH.NONE,
+        SIGHASH.SINGLE,
+        SIGHASH.ANYONECANPAY | SIGHASH.ALL,
+        SIGHASH.UNIFIED | SIGHASH.NONE,
+        SIGHASH.DEFAULT,   # taproot's spelling, and this input is not taproot
+    ])
+    def test_everything_else_is_still_refused(self, declared):
+        with raises_reject(RejectCode.UNSUPPORTED_SIGHASH):
+            self._psbt(declared)

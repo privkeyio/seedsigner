@@ -9,7 +9,7 @@
 #
 # Pillow and qrcode are deliberately pinned differently from upstream; don't
 # "resync" them without checking why.
-embit==0.8.0
+embit @ git+https://github.com/privkeyio/embit.git@5f700aa3222da65c27331df50b9a899236cb5461
 Pillow>=10.4.0
 pyzbar @ https://github.com/seedsigner/pyzbar/archive/c3c237821c6a20b17953efe59b90df0b514a1c03.zip
 qrcode==7.3.1

@@ -9,6 +9,7 @@ from embit.descriptor import Descriptor
 from embit.networks import NETWORKS
 from embit.psbt import PSBT, DerivationPath, InputScope, OutputScope
 from embit.ec import PublicKey
+from embit.transaction import SIGHASH
 from io import BytesIO
 from typing import List
 
@@ -62,8 +63,11 @@ FAR_FUTURE_LOCKTIME_SECONDS = 2 * 365 * 24 * 60 * 60
 
 # The only sighash flags that commit to the whole transaction. SIGHASH_DEFAULT
 # (0x00) is taproot's spelling of SIGHASH_ALL (BIP-341) and is valid only there.
+# SIGHASH_UNIFIED_ALL is the hardfork's opt-in: the bit selects which message is
+# hashed, not what the signature covers, so it commits to exactly what ALL does.
 SIGHASH_DEFAULT = 0x00
 SIGHASH_ALL = 0x01
+SIGHASH_UNIFIED_ALL = SIGHASH.UNIFIED | SIGHASH.ALL
 
 
 class RiskWarning:
@@ -854,7 +858,7 @@ class PSBTParser():
         # sign_with() already declines to produce such a signature, but that
         # only surfaces as a generic error after the user has reviewed the whole
         # transaction. Refuse at load, with a reason.
-        allowed_sighash = (None, SIGHASH_ALL)
+        allowed_sighash = (None, SIGHASH_ALL, SIGHASH_UNIFIED_ALL)
         if script_type == "p2tr":
             # BIP-341: 0x00 means "default", which is SIGHASH_ALL.
             allowed_sighash += (SIGHASH_DEFAULT,)
@@ -1394,8 +1398,248 @@ class PSBTParser():
             else:
                 trimmed_psbt.inputs[i].partial_sigs = inp.partial_sigs
 
+                # The declared hash type travels with an input that is not finished. A
+                # signature carries its own in its last byte, so a lone signer never
+                # needed this, but a co-signer reading the trimmed PSBT does: without it
+                # the next one is not told the opt-in was asked for and signs the legacy
+                # message instead, and the two signatures then cover different messages.
+                # BIP-174 has a finalizer strip everything but the final fields, so the
+                # branch above is left alone: its witness already carries the type.
+                trimmed_psbt.inputs[i].sighash_type = inp.sighash_type
+
         return trimmed_psbt
 
+
+    # The hash types this device will ask sign_with for. Everything else falls back to
+    # SIGHASH.DEFAULT, which is what sign_with was called with before any hash type was
+    # passed at all, and under which it signs the inputs asking for ALL and skips the rest.
+    #
+    # An allowlist rather than a blocklist, because the value comes off the wire from a host
+    # this device does not trust, and it decides what the signature commits to. SIGHASH_NONE
+    # commits to no outputs, so its signature lets anyone redirect what the input spends.
+    # SIGHASH_SINGLE with no output at the input's index does the same, and on a legacy input
+    # signs a constant that is reusable against any transaction spending that key.
+    # ANYONECANPAY leaves the other inputs uncommitted. The load check above already
+    # refuses all of them; this is the second place that has to agree, and it is the one
+    # that decides what sign_with is asked for.
+    #
+    # This bounds what is asked for, not what can come back. Under DEFAULT, sign_with still
+    # honours an input's own opt-in bit, so a PSBT declaring 0x21 is signed as 0x21 without
+    # this device naming it. That commits to every output and every input, which is the
+    # property being protected here. A bare 0x20 is not signed under DEFAULT by either
+    # side: it is not on this list, and embit refuses it against the type asked for.
+    SIGNABLE_SIGHASH_TYPES = frozenset({
+        None,                               # the PSBT does not say
+        SIGHASH.DEFAULT,                    # taproot, commits to everything
+        SIGHASH.ALL,
+        SIGHASH.UNIFIED | SIGHASH.ALL,      # the unified opt-in
+    })
+
+    @staticmethod
+    def _derivation_matches_seed(public_key, derivation_path_obj, seed, network, fingerprint=None, is_taproot=False):
+        """Whether one derivation on an input or output belongs to the given seed.
+
+        A coordinator given only an xpub omits the fingerprint, which arrives as four
+        zero bytes, so an exact comparison alone would answer False for inputs that are
+        this seed's. The fallback asks seed_owns_pubkey, which is the canonical check
+        and the only one that compares taproot keys the way taproot means them.
+        """
+        if fingerprint is None:
+            fingerprint = seed.get_fingerprint(network)
+        if hexlify(derivation_path_obj.fingerprint).decode() == fingerprint:
+            return True
+
+        if derivation_path_obj.fingerprint == b"\x00\x00\x00\x00":
+            root = bip32.HDKey.from_seed(
+                seed.seed_bytes,
+                version=NETWORKS[SettingsConstants.map_network_to_embit(network)]["xprv"],
+            )
+            try:
+                return PSBTParser.seed_owns_pubkey(
+                    root, derivation_path_obj.derivation, public_key,
+                    child_key_derivation_cache=None, is_taproot=is_taproot)
+            except Exception as e:
+                logger.debug("Fingerprint fallback derive failed: %s", e, exc_info=True)
+        return False
+
+
+    @staticmethod
+    def _input_is_ours(inp, seed, network, fingerprint=None):
+        """Whether any derivation on this input belongs to the given seed."""
+        derivations = [(pub, derivation, False) for pub, derivation in inp.bip32_derivations.items()] + [
+            (pub, derivation, True) for pub, (_leaves, derivation) in inp.taproot_bip32_derivations.items()
+        ]
+        return any(
+            PSBTParser._derivation_matches_seed(pub, derivation, seed, network, fingerprint, is_taproot)
+            for pub, derivation, is_taproot in derivations
+        )
+
+
+    @staticmethod
+    def effective_sighash_type(inp, requested):
+        """The hash type this input will actually be signed with.
+
+        Mirrors what sign_with resolves before it builds the digest: an input that
+        declares nothing takes the requested type, and DEFAULT means ALL for anything
+        that is not taproot, because the byte has to name an output type there. A caller
+        naming a type owns the opt-in bit, so the request wins where that bit is in play.
+
+        The screen shows this rather than the requested type: they differ for the two
+        commonest PSBTs, and a screen that names a type no signature carries is worse
+        than one that says nothing.
+        """
+        declared = inp.sighash_type
+        effective = requested if declared is None else declared
+        if not inp.is_taproot and effective == SIGHASH.DEFAULT:
+            effective = SIGHASH.ALL
+        # Kept so this stays a faithful mirror of sign_with rather than a shortcut that
+        # happens to agree. It cannot fire today: sighash_type only returns something
+        # other than DEFAULT when every input already declares that same value, so the
+        # request and the effective type are equal before reaching here. It would start
+        # mattering the moment sighash_type is allowed to ask for something an input did
+        # not declare.
+        if (
+            requested is not None
+            and requested != SIGHASH.DEFAULT
+            and (effective | requested) & SIGHASH.UNIFIED
+        ):
+            effective = requested
+        return effective
+
+
+    @staticmethod
+    def unsignable_inputs(tx, seed=None, network=SettingsConstants.MAINNET, fingerprint=None):
+        """Inputs belonging to this seed that the signer will skip because the hash type
+        they declare is not the one this device is about to ask for.
+
+        Scoped to this seed's own inputs. An input the device holds no key for yields no
+        signature whatever its hash type, and a co-signer finishes it, so counting those
+        would refuse the collaborative transactions this device exists to take part in.
+
+        An input declaring nothing takes whatever is asked for, and DEFAULT and ALL are
+        the same request, so neither is skipped. The comparison is embit's own, so this
+        cannot drift from what sign_with actually does.
+
+        Signing past one of these produces a transaction signed less completely than the
+        device reports, because the signature count still rises.
+        """
+        from embit.psbt import sighash_types_agree
+
+        requested = PSBTParser.sighash_type(tx)
+        return [
+            i for i, inp in enumerate(tx.inputs)
+            if inp.sighash_type is not None
+            and not sighash_types_agree(inp.sighash_type, requested)
+            and (seed is None or PSBTParser._input_is_ours(inp, seed, network, fingerprint))
+        ]
+
+
+    # Why a transaction cannot be described by one hash type on the approval screen.
+    REFUSED_PARTIAL = "partial"   # an input this seed holds would be skipped
+    REFUSED_MIXED = "mixed"       # all would be signed, with types no one label covers
+
+
+    @staticmethod
+    def screen_sighash_type(tx, seed, network=SettingsConstants.MAINNET):
+        """The hash type to name on the approval screen, and why not where there is none.
+
+        Returns (hash_type, None) when there is one honest thing to show, and
+        (None, reason) otherwise. The two reasons are different situations and the user
+        is told different things: one means part of the transaction would go unsigned,
+        the other that every part would be signed but with types no single label
+        describes.
+
+        One place, so the view and the tests cannot describe different behaviour.
+
+        Inputs this seed holds decide it where there are any. Where there are none the
+        whole transaction does, because sign_with also matches the root key inside a
+        script with no derivation present, and those inputs still get signed.
+
+        A seed of None is card-backed signing, where the key never reaches this device
+        and no input can be recognised as ours. Every input then has to agree, which is
+        the stricter reading of the same rule.
+        """
+        requested = PSBTParser.sighash_type(tx)
+        fingerprint = seed.get_fingerprint(network) if seed is not None else None
+
+        if PSBTParser.unsignable_inputs(tx, seed=seed, network=network, fingerprint=fingerprint):
+            return None, PSBTParser.REFUSED_PARTIAL
+
+        ours = [] if seed is None else [
+            inp for inp in tx.inputs
+            if PSBTParser._input_is_ours(inp, seed, network, fingerprint)
+        ]
+        effective = {
+            PSBTParser.effective_sighash_type(inp, requested) for inp in (ours or tx.inputs)
+        }
+        if len(effective) != 1:
+            return None, PSBTParser.REFUSED_MIXED
+
+        # The declared type comes off the wire as four little endian bytes with no
+        # bound, so where no input matches this seed the fallback above can carry a
+        # value the device would never sign. Naming it on the approval screen would
+        # describe a signature that cannot exist.
+        shown = effective.pop()
+        if shown not in PSBTParser.SIGNABLE_SIGHASH_TYPES:
+            return None, PSBTParser.REFUSED_MIXED
+        return shown, None
+
+
+    @staticmethod
+    def signed_hash_types(tx):
+        """Every signature on this PSBT: where it sits, the hash type it carries, and
+        the signature itself.
+
+        Read back off the signatures rather than predicted, so it says what was actually
+        produced however the signer decided to produce it. The raw bytes are returned
+        alongside the hash type because a host can pre-populate any of these slots: a
+        caller comparing only which slots are occupied would take a signature that
+        replaced planted junk for one that was already there.
+        """
+        def hash_type(raw):
+            # a taproot key path signature is 64 bytes and carries no trailing byte,
+            # which is SIGHASH_DEFAULT rather than an absent hash type. A value the host
+            # left empty has no hash type at all; it is reported as one nothing matches
+            # so it can never be mistaken for the type on the screen.
+            if not raw:
+                return None
+            return raw[-1] if len(raw) != 64 else SIGHASH.DEFAULT
+
+        found = {}
+        for i, inp in enumerate(tx.inputs):
+            for key, sig in inp.partial_sigs.items():
+                raw = bytes(sig)
+                found[(i, "partial", bytes(key.sec()))] = (hash_type(raw), raw)
+            for key, sig in inp.taproot_sigs.items():
+                raw = bytes(sig)
+                found[(i, "taproot", str(key))] = (hash_type(raw), raw)
+            # Two separate reads, not one chained pair. The pinned embit puts a taproot
+            # key path signature in final_scriptwitness and has no taproot_key_sig at
+            # all; an embit that adds one while still writing the witness would, under
+            # an elif, silently stop this from reading the witness, and a signature
+            # would escape the check that this whole function exists to feed.
+            key_sig = getattr(inp, "taproot_key_sig", None)
+            if key_sig is not None:
+                raw = bytes(key_sig)
+                found[(i, "taproot_key", b"")] = (hash_type(raw), raw)
+            if inp.final_scriptwitness and inp.final_scriptwitness.items:
+                raw = bytes(inp.final_scriptwitness.items[0])
+                found[(i, "witness", b"")] = (hash_type(raw), raw)
+        return found
+
+
+    @staticmethod
+    def sighash_type(tx):
+        """The hash type to pass to sign_with for this PSBT.
+
+        The inputs' own type where they all ask for the same signable one, and
+        SIGHASH.DEFAULT otherwise. Under DEFAULT embit signs the inputs asking for ALL and
+        skips the rest, which is what this did before a hash type was passed at all.
+        """
+        declared = {inp.sighash_type for inp in tx.inputs}
+        if len(declared) != 1 or not declared <= PSBTParser.SIGNABLE_SIGHASH_TYPES:
+            return SIGHASH.DEFAULT
+        return declared.pop() or SIGHASH.DEFAULT
 
     @staticmethod
     def sig_count(tx):

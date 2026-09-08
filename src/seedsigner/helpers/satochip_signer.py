@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError
 
 from embit import bip32
 from embit.ec import PublicKey
-from embit.psbt import PSBT
+from embit.psbt import PSBT, SIGHASH
 from embit.util import secp256k1
 from seedsigner.helpers import embit_utils
 from seedsigner.helpers.iso7816 import format_sw_error
@@ -240,7 +240,7 @@ def _bitcoin_message_digest(message: str) -> bytes:
     return hashlib.sha256(hashlib.sha256(serialized).digest()).digest()
 
 
-def sign_psbt_with_satochip(psbt: PSBT, connector, timeout: float | None = None) -> SignResult:
+def sign_psbt_with_satochip(psbt: PSBT, connector, timeout: float | None = None, sighash: int = SIGHASH.ALL) -> SignResult:
     """Sign the given PSBT using a connected Satochip card.
 
     To obfuscate potential chosen-nonce attacks, a random number of dummy
@@ -254,6 +254,10 @@ def sign_psbt_with_satochip(psbt: PSBT, connector, timeout: float | None = None)
     Each signing attempt is limited to a configurable timeout.
 
     If ``timeout`` is passed it overrides the configured setting value.
+
+    ``sighash`` is the hash type the approval screen named. The card is handed a digest
+    and signs it blind, so the type is chosen here for both the digest and the byte
+    appended to the signature.
 
     Returns a SignResult with signed_count and timed_out flag.
     """
@@ -294,6 +298,11 @@ def sign_psbt_with_satochip(psbt: PSBT, connector, timeout: float | None = None)
                 )
             except Exception:
                 pass
+
+    # The applet signs 32 blind bytes, so the hash type is settled on this side: it
+    # picks the digest and it is the byte appended to the signature. DEFAULT means ALL
+    # for anything that is not taproot, which is everything a card signs here.
+    hash_type = SIGHASH.ALL if sighash == SIGHASH.DEFAULT else sighash
 
     # Now sign the actual PSBT inputs. To avoid leaking the original
     # ordering, process the inputs in a random sequence. Signatures are
@@ -351,7 +360,7 @@ def sign_psbt_with_satochip(psbt: PSBT, connector, timeout: float | None = None)
 
             matched_pubkey = True
             logger.info("PSBT signer input %d: matched card pubkey path=%s", i, path)
-            tx_hash = psbt.sighash(i)
+            tx_hash = psbt.sighash(i, sighash=hash_type)
 
             extra_sigs = (
                 random.randint(1, in_tx_dummy_max) if random.random() < dummy_prob else 0
@@ -407,7 +416,7 @@ def sign_psbt_with_satochip(psbt: PSBT, connector, timeout: float | None = None)
             except Exception as e:
                 logger.warning("Failed to normalize Satochip signature: %s", e)
 
-            inp.partial_sigs[pubkey] = sig_der + b"\x01"
+            inp.partial_sigs[pubkey] = sig_der + bytes([hash_type])
             signed += 1
             logger.info("PSBT signer input %d: signature appended (signed_count=%d)", i, signed)
             break

@@ -778,6 +778,10 @@ class PSBTFinalizeScreen(ButtonListScreen):
     # timelock is the one who can tell that this transaction should not have one.
     locktime_text: str = None
 
+    # The hash type this device is about to sign with, as PSBTParser.screen_sighash_type
+    # decides it. None only where the caller did not supply one.
+    sighash_type: int = None
+
     def __post_init__(self):
         # Customize defaults
         self.title = _("Sign Transaction")
@@ -819,4 +823,30 @@ class PSBTFinalizeScreen(ButtonListScreen):
                 font_size=GUIConstants.get_body_font_size() - 2,
                 font_color=GUIConstants.WARNING_COLOR,
                 screen_y=next_y,
+            ))
+
+        # Which signature message is about to be produced. Shown in both states rather
+        # than only when the opt-in is used: a host that rewrites a request for the
+        # unified message down to the standard one gets a standard signature, and if
+        # only the opt-in were labelled, its absence would be indistinguishable from
+        # this screen never having said anything.
+        #
+        # The other state is "standard" rather than "legacy" because it is not one
+        # message: 0x00 on a taproot input is BIP-341's, 0x01 off taproot is BIP-143's,
+        # and calling either of them legacy would name the wrong algorithm on the one
+        # screen whose purpose is naming it.
+        if self.sighash_type is not None:
+            from embit.transaction import SIGHASH
+
+            if self.sighash_type & SIGHASH.UNIFIED:
+                label = _("Unified sighash")
+            else:
+                label = _("Standard sighash")
+
+            self.components.append(TextArea(
+                text=f"{label} (0x{self.sighash_type:02x})",
+                font_color=GUIConstants.LABEL_FONT_COLOR,
+                font_size=GUIConstants.LABEL_FONT_SIZE,
+                is_text_centered=True,
+                screen_y=self.components[-1].screen_y + self.components[-1].height + GUIConstants.COMPONENT_PADDING,
             ))

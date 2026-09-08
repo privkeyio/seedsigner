@@ -527,6 +527,8 @@ def generate_screenshots(locale):
                 ScreenshotConfig(psbt_views.PSBTFinalizeView,     mock_context_manager=mock_multisig_psbt_loaded),
                 #ScreenshotConfig(PSBTSignedQRDisplayViewScreenshotConfig),
                 ScreenshotConfig(psbt_views.PSBTSigningErrorView, mock_context_manager=mock_multisig_psbt_loaded),
+                ScreenshotConfig(psbt_views.PSBTUnsignableSighashView, mock_context_manager=mock_multisig_psbt_loaded),
+                ScreenshotConfig(psbt_views.PSBTUnsignableTransactionView, mock_context_manager=mock_multisig_psbt_loaded),
             ],
             "Tools Views": [
                 ScreenshotConfig(tools_views.ToolsMenuView),

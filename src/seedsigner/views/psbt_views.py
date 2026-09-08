@@ -1291,6 +1291,22 @@ class PSBTFinalizeView(View):
         if not self.controller.psbt_sign_with_satochip and psbt_parser is None:
             return Destination(MainMenuView)
 
+        # One decision, made in PSBTParser so this view and the tests cannot describe
+        # different behaviour. None means there is nothing honest to put on the screen:
+        # an input this device would sign would be skipped, leaving the transaction
+        # signed in part, or the inputs do not reduce to a single type.
+        #
+        # Card-backed signing reaches here with a parser built on an xpub and no seed,
+        # so no input can be recognised as ours and every input has to agree. That is
+        # the stricter reading, and it is the type the card is then asked to sign.
+        shown_sighash, refused_because = (
+            PSBTParser.screen_sighash_type(psbt, psbt_parser.seed, psbt_parser.network)
+            if psbt_parser is not None
+            else PSBTParser.screen_sighash_type(psbt, None)
+        )
+        if shown_sighash is None:
+            return Destination(PSBTUnsignableSighashView, view_args=dict(reason=refused_because))
+
         selected_menu_num = self.run_screen(
             PSBTFinalizeScreen,
             button_data=[self.APPROVE_PSBT],
@@ -1299,6 +1315,7 @@ class PSBTFinalizeView(View):
             is_rbf=(psbt_parser is not None
                     and RiskWarning.RBF in psbt_parser.risk_warnings),
             locktime_text=self._locktime_text(psbt_parser),
+            sighash_type=shown_sighash,
         )
 
         if selected_menu_num == RET_CODE__BACK_BUTTON:
@@ -1326,6 +1343,12 @@ class PSBTFinalizeView(View):
                 getattr(connector, "UID_SHA1", "unknown"),
             )
 
+        # Signed on a copy. The PSBT comes off a QR from a host this device does not
+        # trust, and signing mutates the inputs in place as it goes, so one that raises
+        # partway through would otherwise leave a half-signed object on the controller
+        # for whatever runs next. The controller only takes the trimmed result, below.
+        signing_psbt = PSBT.parse(psbt.serialize())
+
         from seedsigner.gui.screens.screen import LoadingScreenThread
         loading = LoadingScreenThread(text=_("Signing PSBT..."))
         loading.start()
@@ -1337,19 +1360,43 @@ class PSBTFinalizeView(View):
                 retry_timeout = getattr(self.controller, "_psbt_sign_retry_timeout", None)
                 if is_keycard:
                     from seedsigner.helpers.keycard_signer import sign_psbt_with_keycard
-                    sign_result = sign_psbt_with_keycard(psbt, connector, timeout=retry_timeout)
+                    sign_result = sign_psbt_with_keycard(signing_psbt, connector, timeout=retry_timeout, sighash=shown_sighash)
                 else:
                     from seedsigner.helpers.satochip_signer import sign_psbt_with_satochip
-                    sign_result = sign_psbt_with_satochip(psbt, connector, timeout=retry_timeout)
+                    sign_result = sign_psbt_with_satochip(signing_psbt, connector, timeout=retry_timeout, sighash=shown_sighash)
                 added = sign_result.signed_count
                 logger.info(
                     "PSBTFinalize: card signer reported signed=%d timed_out=%s",
                     added, sign_result.timed_out,
                 )
             else:
-                psbt.sign_with(psbt_parser.root)
+                # Name the hash type the PSBT asks for rather than relying on the signer's
+                # default: the unified opt-in selects a signature hash algorithm, so which
+                # one is used is worth stating here rather than inheriting from whichever
+                # embit happens to be installed.
+                before = PSBTParser.signed_hash_types(signing_psbt)
+                signing_psbt.sign_with(psbt_parser.root, sighash=PSBTParser.sighash_type(signing_psbt))
+
+                # The screen made a claim; this is where it is held to it. sign_with also
+                # signs inputs it matches by finding the root key inside a script, with no
+                # derivation to predict from, so what was produced is read back off the
+                # signatures rather than worked out in advance. Compared by signature, not
+                # by which slots are occupied: a host can plant a signature in any slot this
+                # device is about to fill, and matching on the slot alone would read the
+                # real one as something already there and never check it.
+                added = {
+                    where: hash_type
+                    for where, (hash_type, raw) in PSBTParser.signed_hash_types(signing_psbt).items()
+                    if before.get(where, (None, None))[1] != raw
+                }
+                if set(added.values()) - {shown_sighash}:
+                    logger.error(
+                        "signed hash types %s do not match the %s shown to the user",
+                        sorted(set(added.values())), hex(shown_sighash),
+                    )
+                    return Destination(PSBTUnsignableTransactionView)
             if isinstance(self.controller.psbt_seed, WIFKey):
-                tx = finalize_psbt(psbt)
+                tx = finalize_psbt(signing_psbt)
                 self.controller.signed_tx_hex = tx.serialize().hex() if tx else None
                 logger.info(
                     "PSBTFinalize: WIF finalize result tx_present=%s hex_len=%s",
@@ -1359,7 +1406,7 @@ class PSBTFinalizeView(View):
             else:
                 self.controller.signed_tx_hex = None
 
-            trimmed_psbt = PSBTParser.trim(psbt)
+            trimmed_psbt = PSBTParser.trim(signing_psbt)
             trimmed_sig_cnt = PSBTParser.sig_count(trimmed_psbt)
             logger.info(
                 "PSBTFinalize: post-sign trimmed_sig_count=%d delta=%d",
@@ -1375,11 +1422,14 @@ class PSBTFinalizeView(View):
                 )
             except Exception as e:
                 logger.info("PSBTFinalize: finalize_psbt(trimmed) raised=%s", e)
-        except Exception:
+        except Exception as e:
             if self.controller.psbt_sign_with_satochip:
                 logger.exception("Failed to sign PSBT with Satochip")
                 return Destination(PSBTFinalizeView)
-            raise
+            # A failure here is a property of the PSBT, which is untrusted input, rather
+            # than of the seed. Logged so a genuine defect is still visible.
+            logger.exception("signing raised on a PSBT the user had approved: %s", e)
+            return Destination(PSBTUnsignableTransactionView)
         finally:
             loading.stop()
 
@@ -1489,6 +1539,61 @@ class PSBTSignedQRDisplayView(View):
 
         # We're done with this PSBT. Route back to MainMenuView which always
         #   clears all ephemeral data (except in-memory seeds).
+        return Destination(MainMenuView, clear_history=True)
+
+
+
+class PSBTUnsignableTransactionView(View):
+    """Signing raised on a PSBT the user had already approved.
+
+    Kept separate from PSBTSigningErrorView, which offers a different seed. The failure
+    is a property of the transaction, so walking the user through every seed on the
+    device would hit the same failure each time while telling them their seeds are at
+    fault.
+    """
+    def run(self):
+        self.run_screen(
+            WarningScreen,
+            title=_("Transaction Error"),
+            status_icon_name=SeedSignerIconConstants.WARNING,
+            status_headline=_("Cannot Sign"),
+            text=_("This transaction could not be signed. Nothing was signed and nothing was sent."),
+            show_back_button=False,
+            button_data=[ButtonOption("Done")],
+        )
+        return Destination(MainMenuView, clear_history=True)
+
+
+
+class PSBTUnsignableSighashView(View):
+    """There is no single signature hash type that honestly describes this transaction.
+
+    Two different situations, and the user is told which. Either an input this device
+    would sign declares a type it will not ask for, so signing would leave that input
+    unsigned while the signature count still rose; or every input would be signed, but
+    with types no one label covers, so the approval screen could not name what was about
+    to happen.
+    """
+    def __init__(self, reason: str = None):
+        super().__init__()
+        self.reason = reason
+
+
+    def run(self):
+        if self.reason == PSBTParser.REFUSED_MIXED:
+            text = _("This transaction's inputs ask to be signed in different ways, so this device cannot tell you what it would sign.")
+        else:
+            text = _("This transaction asks for a signature type this device does not sign. Signing it would only sign part of it.")
+
+        self.run_screen(
+            WarningScreen,
+            title=_("Transaction Error"),
+            status_icon_name=SeedSignerIconConstants.WARNING,
+            status_headline=_("Cannot Sign"),
+            text=text,
+            show_back_button=False,
+            button_data=[ButtonOption("Done")],
+        )
         return Destination(MainMenuView, clear_history=True)
 
 

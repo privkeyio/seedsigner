@@ -4,7 +4,7 @@ import os
 import random
 from concurrent.futures import TimeoutError
 
-from embit.psbt import PSBT
+from embit.psbt import PSBT, SIGHASH
 
 from seedsigner.helpers.iso7816 import format_sw_error
 from seedsigner.helpers.satochip_signer import (
@@ -20,7 +20,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def sign_psbt_with_keycard(psbt: PSBT, connector, timeout: float | None = None) -> SignResult:
+def sign_psbt_with_keycard(psbt: PSBT, connector, timeout: float | None = None, sighash: int = SIGHASH.ALL) -> SignResult:
     """Sign PSBT inputs with a Keycard backend.
 
     Keycard shells may reject pubkey export for arbitrary child paths with
@@ -62,6 +62,11 @@ def sign_psbt_with_keycard(psbt: PSBT, connector, timeout: float | None = None) 
                 )
             except Exception:
                 pass
+
+    # The applet signs 32 blind bytes, so the hash type is settled on this side: it
+    # picks the digest and it is the byte appended to the signature. DEFAULT means ALL
+    # for anything that is not taproot, which is everything a card signs here.
+    hash_type = SIGHASH.ALL if sighash == SIGHASH.DEFAULT else sighash
 
     indices = list(range(len(psbt.inputs)))
     random.shuffle(indices)
@@ -107,7 +112,7 @@ def sign_psbt_with_keycard(psbt: PSBT, connector, timeout: float | None = None) 
                 )
                 continue
 
-            tx_hash = psbt.sighash(i)
+            tx_hash = psbt.sighash(i, sighash=hash_type)
             extra_sigs = random.randint(1, in_tx_dummy_max) if random.random() < dummy_prob else 0
             if extra_sigs:
                 logger.info(
@@ -158,7 +163,7 @@ def sign_psbt_with_keycard(psbt: PSBT, connector, timeout: float | None = None) 
             except Exception as e:
                 logger.warning("Failed to normalize Keycard signature: %s", e)
 
-            inp.partial_sigs[pubkey] = sig_der + b"\x01"
+            inp.partial_sigs[pubkey] = sig_der + bytes([hash_type])
             signed += 1
             logger.info("Keycard signer input %d: signature appended (signed_count=%d)", i, signed)
             break
