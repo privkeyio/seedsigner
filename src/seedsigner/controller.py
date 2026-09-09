@@ -163,7 +163,10 @@ class Controller(Singleton):
         rather than at the top in order avoid circular imports.
     """
 
-    VERSION = "SeSi-0.8.7+ShSi-B13"
+    # The smartcard fork's own version, plus this branch's. Kept in their scheme so a
+    # card user can see which build they are on, and so the -B13 the BIP85 GPG scheme
+    # is selected from still reads the same: the keys a seed derives do not move.
+    VERSION = "SeSi-0.8.7+ShSi-B13+US.1-pre"
 
     # Chain-tip anchor, loaded from resources/latest-block.json and refreshed by
     # .github/workflows/update-latest-block.yml.
