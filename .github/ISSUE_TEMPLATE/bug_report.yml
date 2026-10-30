@@ -36,10 +36,10 @@ body:
     attributes:
       label: Raspberry Pi
       options:
-        - Pi Zero v1.3 or Zero W (pi0 image)
+        - Pi Zero v1.3, Zero W or Pi 1 Model B/B+ (pi0 image)
         - Pi Zero 2 W or Pi 3 Model B (pi02w image)
         - Pi 2 Model B (pi2 image)
-        - Pi 4 Model B (pi4 image)
+        - Pi 4 Model B or Pi 400 (pi4 image)
         - Built from source
     validations:
       required: true
