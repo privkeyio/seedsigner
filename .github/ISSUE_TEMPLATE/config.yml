@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Bug or feature in SeedSigner itself
+    url: https://github.com/SeedSigner/seedsigner/issues
+    about: Anything not specific to the unified opt-in signature hash belongs upstream, where it reaches far more users.
+  - name: Bug in Shrike
+    url: https://github.com/privkeyio/shrike/issues
+    about: Problems in the wallet that builds the PSBT rather than in SeedSigner.
+  - name: Verifying a download
+    url: https://github.com/privkeyio/seedsigner/releases/latest
+    about: Each release says how to check SHA256SUMS and the signature.
