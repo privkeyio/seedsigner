@@ -1,0 +1,73 @@
+name: Bug report
+description: Something in this SeedSigner build does not work as it should
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please check the [latest release](https://github.com/privkeyio/seedsigner/releases/latest) first.
+
+        This is SeedSigner with one change: it signs with the unified opt-in signature hash when the PSBT asks for it. Everything else is SeedSigner's code unchanged, so if official SeedSigner does the same thing, please report it [upstream](https://github.com/SeedSigner/seedsigner/issues), where it gets fixed for everyone.
+
+        Never paste your seed, SeedQR or passphrase anywhere, including here.
+
+  - type: dropdown
+    id: upstream
+    attributes:
+      label: Does the same thing happen on official SeedSigner?
+      options:
+        - No, only on this build
+        - Yes, official SeedSigner does it too
+        - Haven't checked
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The exact string from **Settings > Version**.
+      placeholder: v0.8.7-unified-sighash.6
+    validations:
+      required: true
+
+  - type: dropdown
+    id: board
+    attributes:
+      label: Raspberry Pi
+      options:
+        - Pi Zero v1.3, Zero W or Pi 1 Model B/B+ (pi0 image)
+        - Pi Zero 2 W or Pi 3 Model B (pi02w image)
+        - Pi 2 Model B (pi2 image)
+        - Pi 4 Model B or Pi 400 (pi4 image)
+        - Built from source
+    validations:
+      required: true
+
+  - type: input
+    id: host
+    attributes:
+      label: Wallet software
+      description: The wallet that built the PSBT, with its exact version.
+      placeholder: Shrike 2.5.6-blake2b.1
+    validations:
+      required: true
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what the screen showed instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1.
+        2.
+        3.
+    validations:
+      required: false
